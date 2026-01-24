@@ -43,7 +43,7 @@
     .tag.check { background: #ffc107; color: #333; }
 
     #wrap { position: relative; background: #f4f4f4; overflow: hidden; }
-    canvas { width: 100%; height: 100%; display: block; }
+    svg { width: 100%; height: 100%; display: block; }
     
     #overlayInfo {
       position: absolute; top: 10px; left: 10px; 
@@ -109,7 +109,7 @@
   </div>
 
   <div id="wrap">
-    <canvas id="cv"></canvas>
+    <svg id="cv" xmlns="http://www.w3.org/2000/svg"></svg>
     <div id="overlayInfo">
       <div><b>全局状态</b></div>
       <div id="hud-main">Initializing...</div>
@@ -360,7 +360,6 @@ class HNSW {
    App & Render Logic
 ========================= */
 const cv = document.getElementById("cv");
-const ctx = cv.getContext("2d");
 const statusText = document.getElementById("statusText");
 const queueText = document.getElementById("queueText");
 const hudMain = document.getElementById("hud-main");
@@ -505,7 +504,9 @@ function updateUI() {
 ========================= */
 function resize() {
   const r = cv.getBoundingClientRect();
-  cv.width = r.width; cv.height = r.height;
+  cv.setAttribute('viewBox', `0 0 ${r.width} ${r.height}`);
+  cv.setAttribute('width', r.width);
+  cv.setAttribute('height', r.height);
 }
 window.addEventListener("resize", () => { resize(); render(); });
 
@@ -526,29 +527,46 @@ function toXY(node, layer, maxL, W, H) {
 
 function render() {
   resize();
-  const W = cv.width, H = cv.height;
-  ctx.clearRect(0,0,W,H);
+  const W = parseFloat(cv.getAttribute('width'));
+  const H = parseFloat(cv.getAttribute('height'));
+
+  // Clear SVG
+  cv.innerHTML = '';
 
   const maxL = Math.max(0, hnsw.maxLevel, currentState ? (currentState.target.level > hnsw.maxLevel ? currentState.target.level : 0) : 0);
-  
+
   // 1. Background Layers
   const layers = Math.max(1, maxL + 1);
   const bandH = (H - 60) / layers;
-  
+
   for (let l=maxL; l>=0; l--) {
     const y = 40 + (maxL - l)*bandH;
-    ctx.fillStyle = l%2===0 ? "rgba(0,0,0,0.02)" : "rgba(0,0,0,0)";
-    ctx.fillRect(0, y, W, bandH);
-    ctx.fillStyle = "#aaa"; ctx.font = "bold 12px monospace";
-    ctx.fillText(`Layer ${l}`, 10, y+16);
+
+    // Background rect
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', 0);
+    rect.setAttribute('y', y);
+    rect.setAttribute('width', W);
+    rect.setAttribute('height', bandH);
+    rect.setAttribute('fill', l%2===0 ? "rgba(0,0,0,0.02)" : "rgba(0,0,0,0)");
+    cv.appendChild(rect);
+
+    // Layer label
+    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    text.setAttribute('x', 10);
+    text.setAttribute('y', y+16);
+    text.setAttribute('fill', '#aaa');
+    text.setAttribute('font-family', 'monospace');
+    text.setAttribute('font-size', '12px');
+    text.setAttribute('font-weight', 'bold');
+    text.textContent = `Layer ${l}`;
+    cv.appendChild(text);
   }
 
   // 2. Existing Edges
-  ctx.lineWidth = 1;
   for (let l=maxL; l>=0; l--) {
     const c = COLORS[l % COLORS.length];
-    ctx.strokeStyle = c + "44"; // light alpha
-    
+
     for (const n of hnsw.nodes) {
       if (n.level < l) continue;
       const p1 = toXY(n, l, maxL, W, H);
@@ -556,7 +574,15 @@ function render() {
         if (nb < n.id) continue; // draw once
         const n2 = hnsw.nodes[nb];
         const p2 = toXY(n2, l, maxL, W, H);
-        ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', p1.x);
+        line.setAttribute('y1', p1.y);
+        line.setAttribute('x2', p2.x);
+        line.setAttribute('y2', p2.y);
+        line.setAttribute('stroke', c + '44');
+        line.setAttribute('stroke-width', 1);
+        cv.appendChild(line);
       }
     }
   }
@@ -571,21 +597,34 @@ function render() {
 
       // Highlight Candidates (Green Boxes)
       if (currentState.candidates) {
-        ctx.strokeStyle = "#28a745"; ctx.lineWidth = 2;
         for (const c of currentState.candidates) {
           const n = hnsw.nodes[c.id];
           const p = toXY(n, l, maxL, W, H);
-          ctx.strokeRect(p.x-6, p.y-6, 12, 12);
+
+          const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          rect.setAttribute('x', p.x-6);
+          rect.setAttribute('y', p.y-6);
+          rect.setAttribute('width', 12);
+          rect.setAttribute('height', 12);
+          rect.setAttribute('fill', 'none');
+          rect.setAttribute('stroke', '#28a745');
+          rect.setAttribute('stroke-width', 2);
+          cv.appendChild(rect);
         }
       }
 
       // Highlight Results W (Solid dots overlay)
       if (currentState.results) {
-        ctx.fillStyle = "#28a745"; 
         for (const r of currentState.results) {
           const n = hnsw.nodes[r.id];
           const p = toXY(n, l, maxL, W, H);
-          ctx.beginPath(); ctx.arc(p.x, p.y, 2, 0, Math.PI*2); ctx.fill();
+
+          const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          circle.setAttribute('cx', p.x);
+          circle.setAttribute('cy', p.y);
+          circle.setAttribute('r', 2);
+          circle.setAttribute('fill', '#28a745');
+          cv.appendChild(circle);
         }
       }
 
@@ -594,33 +633,63 @@ function render() {
         let fid = (typeof currentState.focusNode === 'object') ? currentState.focusNode.id : currentState.focusNode;
         const fn = hnsw.nodes[fid];
         const fp = toXY(fn, l, maxL, W, H);
-        
-        ctx.strokeStyle = "#007bff"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(fp.x, fp.y, 10, 0, Math.PI*2); ctx.stroke();
-        
+
+        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        circle.setAttribute('cx', fp.x);
+        circle.setAttribute('cy', fp.y);
+        circle.setAttribute('r', 10);
+        circle.setAttribute('fill', 'none');
+        circle.setAttribute('stroke', '#007bff');
+        circle.setAttribute('stroke-width', 2);
+        cv.appendChild(circle);
+
         // Connect Eye to Target (Visual distance)
-        ctx.strokeStyle = "#007bff"; ctx.lineWidth = 1; ctx.setLineDash([2,2]);
-        ctx.beginPath(); ctx.moveTo(fp.x, fp.y); ctx.lineTo(tP.x, tP.y); ctx.stroke();
-        ctx.setLineDash([]);
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', fp.x);
+        line.setAttribute('y1', fp.y);
+        line.setAttribute('x2', tP.x);
+        line.setAttribute('y2', tP.y);
+        line.setAttribute('stroke', '#007bff');
+        line.setAttribute('stroke-width', 1);
+        line.setAttribute('stroke-dasharray', '2,2');
+        cv.appendChild(line);
       }
 
       // Check Node (Orange Line - "Checking")
       if (currentState.checkNode !== null) {
         const cn = hnsw.nodes[currentState.checkNode];
         const cp = toXY(cn, l, maxL, W, H);
-        
+
         let fid = (typeof currentState.focusNode === 'object') ? currentState.focusNode.id : currentState.focusNode;
         const fn = hnsw.nodes[fid];
         const fp = toXY(fn, l, maxL, W, H);
 
-        ctx.strokeStyle = "#ffc107"; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(fp.x, fp.y); ctx.lineTo(cp.x, cp.y); ctx.stroke();
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', fp.x);
+        line.setAttribute('y1', fp.y);
+        line.setAttribute('x2', cp.x);
+        line.setAttribute('y2', cp.y);
+        line.setAttribute('stroke', '#ffc107');
+        line.setAttribute('stroke-width', 3);
+        cv.appendChild(line);
       }
-      
+
       // Draw Target Ghost on this layer
-      ctx.fillStyle = "#d00";
-      ctx.beginPath(); ctx.arc(tP.x, tP.y, 4, 0, Math.PI*2); ctx.fill();
-      ctx.fillText("T", tP.x+6, tP.y);
+      const targetCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      targetCircle.setAttribute('cx', tP.x);
+      targetCircle.setAttribute('cy', tP.y);
+      targetCircle.setAttribute('r', 4);
+      targetCircle.setAttribute('fill', '#d00');
+      cv.appendChild(targetCircle);
+
+      const targetText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      targetText.setAttribute('x', tP.x+6);
+      targetText.setAttribute('y', tP.y);
+      targetText.setAttribute('fill', '#d00');
+      targetText.setAttribute('font-family', 'monospace');
+      targetText.setAttribute('font-size', '10px');
+      targetText.textContent = 'T';
+      cv.appendChild(targetText);
     }
   }
 
@@ -630,13 +699,24 @@ function render() {
     for (const n of hnsw.nodes) {
       if (n.level < l) continue;
       const p = toXY(n, l, maxL, W, H);
-      
-      ctx.fillStyle = c;
-      ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI*2); ctx.fill();
-      
+
+      // Node circle
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('cx', p.x);
+      circle.setAttribute('cy', p.y);
+      circle.setAttribute('r', 3);
+      circle.setAttribute('fill', c);
+      cv.appendChild(circle);
+
       // Label
-      ctx.fillStyle = "#666"; ctx.font = "10px monospace";
-      ctx.fillText(n.id, p.x-4, p.y-5);
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', p.x-4);
+      text.setAttribute('y', p.y-5);
+      text.setAttribute('fill', '#666');
+      text.setAttribute('font-family', 'monospace');
+      text.setAttribute('font-size', '10px');
+      text.textContent = n.id;
+      cv.appendChild(text);
     }
   }
 
