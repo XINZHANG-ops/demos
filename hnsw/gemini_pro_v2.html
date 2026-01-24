@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HNSW 深度显微镜 (Step-by-Step EF)</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, monospace;
+      display: grid; grid-template-columns: 320px 1fr; height: 100vh;
+      background: #fbfbfb; overflow: hidden;
+    }
+    #panel {
+      padding: 14px; border-right: 1px solid rgba(0,0,0,0.1);
+      background: #fff; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+      box-shadow: 2px 0 10px rgba(0,0,0,0.02); z-index: 2;
+    }
+    h2 { margin: 0; font-size: 16px; color: #333; }
+    .btns { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 5px; }
+    button {
+      flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #ccc;
+      background: #f4f4f4; cursor: pointer; font-size: 12px; color: #333;
+      transition: all 0.1s; font-weight: 500;
+    }
+    button:hover { background: #e0e0e0; border-color: #999; }
+    button:active { transform: translateY(1px); }
+    button.primary { background: #333; color: #fff; border-color: #000; }
+    button.primary:hover { background: #555; }
+
+    .row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+    .row input[type="number"] { width: 60px; padding: 3px; }
+    .row input[type="range"] { flex:1; margin-left:10px; }
+
+    #statePanel {
+      margin-top: auto; padding: 10px; background: #f0f0f5; 
+      border-radius: 6px; font-size: 11px; font-family: monospace;
+      border: 1px solid #ddd; min-height: 120px;
+    }
+    .tag { display: inline-block; padding: 1px 4px; border-radius: 3px; margin-right: 4px; color: #fff; }
+    .tag.curr { background: #007bff; }
+    .tag.cand { background: #28a745; }
+    .tag.check { background: #ffc107; color: #333; }
+
+    #wrap { position: relative; background: #f4f4f4; overflow: hidden; }
+    canvas { width: 100%; height: 100%; display: block; }
+    
+    #overlayInfo {
+      position: absolute; top: 10px; left: 10px; 
+      background: rgba(255,255,255,0.95); padding: 8px 12px; 
+      border-radius: 6px; border: 1px solid rgba(0,0,0,0.1);
+      font-size: 12px; font-family: monospace; pointer-events: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1); max-width: 300px;
+    }
+    .log-line { margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  </style>
+</head>
+<body>
+  <div id="panel">
+    <h2>HNSW 深度显微镜</h2>
+    
+    <div style="font-size:12px; color:#666; margin-bottom:10px;">
+      <b>微观调试模式：</b><br>
+      点击 "微步" 可查看每一次距离计算和队列更新。<br>
+      <span style="color:#d00">红色ID</span> = 新点 target<br>
+      <span style="color:#007bff">蓝色圈</span> = 当前在此点向外看<br>
+      <span style="color:#28a745">绿色框</span> = 当前候选池 (Candidates)<br>
+      <span style="color:#ffc107">橙色线</span> = 正在检查这个邻居
+    </div>
+
+    <div class="btns">
+      <button id="btnAuto" class="primary">▶ 自动播放</button>
+      <button id="btnMicro">👣 微步 (Micro)</button>
+    </div>
+    <div class="btns">
+      <button id="btnSkip">⏭ 跳过当前点</button>
+      <button id="btnReset">↩ 重置</button>
+    </div>
+
+    <div class="row">
+      <label>Seed</label>
+      <input id="rngSeed" type="number" value="42" />
+    </div>
+    <div class="row">
+      <label>Speed</label>
+      <input id="speed" type="range" min="1" max="60" value="10" />
+    </div>
+    
+    <hr style="width:100%; border:0; border-top:1px solid #eee; margin:5px 0" />
+    
+    <div class="row">
+      <label>N (点数)</label> <input id="nPoints" type="number" value="20" />
+    </div>
+    <div class="row">
+      <label>M (连接)</label> <input id="mDegree" type="number" value="3" />
+    </div>
+    <div class="row">
+      <label>ef (搜索)</label> <input id="efc" type="number" value="8" />
+    </div>
+    <div class="row">
+      <label>mL (层)</label> <input id="mL" type="number" value="0.9" step="0.1" />
+    </div>
+
+    <div id="statePanel">
+      <div><b>Current Action:</b></div>
+      <div id="statusText" style="color:#666; margin-bottom:6px;">Ready.</div>
+      <div id="queueText"></div>
+    </div>
+  </div>
+
+  <div id="wrap">
+    <canvas id="cv"></canvas>
+    <div id="overlayInfo">
+      <div><b>全局状态</b></div>
+      <div id="hud-main">Initializing...</div>
+    </div>
+  </div>
+
+<script>
+/* =========================
+   Math & Random
+========================= */
+function mulberry32(seed) {
+  let t = seed >>> 0;
+  return function() {
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* =========================
+   HNSW Nodes & Logic (Generator Version)
+========================= */
+class Node {
+  constructor(id, x, y, level) {
+    this.id = id; this.x = x; this.y = y; this.level = level;
+    this.edges = new Map(); // layer -> Set(ids)
+  }
+  neighbors(l) {
+    if (!this.edges.has(l)) this.edges.set(l, new Set());
+    return this.edges.get(l);
+  }
+}
+
+class HNSW {
+  constructor({M, efC, mL, rng}) {
+    this.M = M; this.efC = efC; this.mL = mL; this.rng = rng;
+    this.nodes = [];
+    this.entry = null;
+    this.maxLevel = -1;
+  }
+
+  dist(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  randomLevel() {
+    const u = Math.max(1e-9, this.rng());
+    return Math.floor(-Math.log(u) * this.mL);
+  }
+
+  /* 核心修改：将插入过程改为 Generator */
+  *insertGenerator(x, y, id) {
+    const level = this.randomLevel();
+    const q = new Node(id, x, y, level);
+    this.nodes.push(q);
+
+    // 状态对象：传给 UI 渲染用
+    let state = {
+      phase: 'INIT',
+      target: q,
+      currEntry: null,
+      layer: -1,
+      focusNode: null,
+      checkNode: null,
+      candidates: [], // {id, dist}
+      results: [],    // {id, dist} (W)
+      msg: `New Point #${id} (Lv ${level}) created.`
+    };
+    yield {...state};
+
+    if (this.entry === null) {
+      this.entry = id;
+      this.maxLevel = level;
+      state.phase = 'DONE';
+      state.msg = 'First node becomes entry.';
+      yield {...state};
+      return;
+    }
+
+    let curEntry = this.entry;
+    state.currEntry = curEntry;
+
+    // 1. Descent Phase (Greedy)
+    for (let l = this.maxLevel; l > level; l--) {
+      state.phase = 'DESCENT';
+      state.layer = l;
+      state.msg = `Descending Layer ${l}...`;
+      yield {...state};
+
+      // Greedy Search Logic inline
+      let cur = curEntry;
+      while(true) {
+        state.focusNode = cur;
+        state.msg = `Layer ${l}: At #${cur}, looking for closer neighbors...`;
+        yield {...state};
+
+        let best = cur;
+        let bestDist = this.dist(q, this.nodes[cur]);
+        
+        const nbs = [...this.nodes[cur].neighbors(l)];
+        for (const nb of nbs) {
+          state.checkNode = nb;
+          const d = this.dist(q, this.nodes[nb]);
+          yield {...state, msg: `Checking #${cur} -> #${nb} (d=${d.toFixed(3)})`};
+          
+          if (d < bestDist) {
+            bestDist = d;
+            best = nb;
+          }
+        }
+        state.checkNode = null;
+
+        if (best !== cur) {
+          // Found closer
+          state.msg = `Found closer: #${best} (d=${bestDist.toFixed(3)}). Moving.`;
+          cur = best;
+          // draw arrow logic handled by visualizer trace
+          yield {...state}; 
+        } else {
+          state.msg = `Local minimum at #${cur}. Descending.`;
+          yield {...state};
+          break;
+        }
+      }
+      curEntry = cur;
+      state.currEntry = curEntry;
+    }
+
+    // 2. Construction Phase (EF Search)
+    const upper = Math.min(level, this.maxLevel);
+    for (let l = upper; l >= 0; l--) {
+      state.phase = 'CONSTRUCTION';
+      state.layer = l;
+      state.msg = `Building at Layer ${l}. Entry: #${curEntry}`;
+      yield {...state};
+
+      // --- efSearch Logic with Yields ---
+      const visited = new Set([curEntry]);
+      // C: min-heap candidates (we just sort array)
+      let candidates = [{id: curEntry, d: this.dist(q, this.nodes[curEntry])}];
+      // W: max-heap results (keep ef best)
+      let results = [{id: curEntry, d: candidates[0].d}];
+      
+      state.candidates = [...candidates];
+      state.results = [...results];
+
+      while (candidates.length > 0) {
+        // Pop closest candidate
+        candidates.sort((a,b) => a.d - b.d);
+        const c = candidates.shift();
+        
+        state.focusNode = c.id;
+        state.candidates = [...candidates]; // update UI
+        
+        // Results sorted by distance
+        results.sort((a,b) => a.d - b.d);
+        const worst = results[results.length - 1];
+
+        // Stop condition
+        if (c.d > worst.d && results.length >= this.efC) {
+          state.msg = `Stop: Candidate #${c.id} (d=${c.d.toFixed(3)}) is worse than worst result #${worst.id} (d=${worst.d.toFixed(3)}).`;
+          yield {...state};
+          break;
+        }
+
+        state.msg = `Expanding candidate #${c.id} (d=${c.d.toFixed(3)})...`;
+        yield {...state};
+
+        const cNode = this.nodes[c.id];
+        for (const nb of cNode.neighbors(l)) {
+          if (visited.has(nb)) continue;
+          visited.add(nb);
+
+          const dist = this.dist(q, this.nodes[nb]);
+          state.checkNode = nb;
+          
+          results.sort((a,b) => a.d - b.d);
+          const currentWorst = results[results.length - 1];
+
+          let action = "";
+          // Check if we should add to results
+          if (results.length < this.efC || dist < currentWorst.d) {
+             candidates.push({id: nb, d: dist});
+             results.push({id: nb, d: dist});
+             results.sort((a,b) => a.d - b.d);
+             if (results.length > this.efC) results.pop(); // Keep only ef
+             action = "ADDED to W";
+          } else {
+             action = "REJECTED (too far)";
+          }
+
+          state.candidates = [...candidates];
+          state.results = [...results];
+          state.msg = `Check #${nb}: d=${dist.toFixed(3)}. ${action}`;
+          yield {...state};
+        }
+        state.checkNode = null;
+      }
+      // --- End efSearch ---
+
+      // Connect neighbors
+      const neighbors = results.slice(0, this.M); // M closest
+      state.phase = 'CONNECT';
+      state.msg = `Connecting #${id} to ${neighbors.length} neighbors in Layer ${l}.`;
+      yield {...state};
+
+      for (const res of neighbors) {
+        const nb = res.id;
+        this.nodes[id].neighbors(l).add(nb);
+        this.nodes[nb].neighbors(l).add(id);
+        
+        // Prune neighbor's connections
+        this.pruneToM(nb, l);
+      }
+      this.pruneToM(id, l);
+
+      if (neighbors.length > 0) curEntry = neighbors[0].id;
+    }
+
+    // Update global entry
+    if (level > this.maxLevel) {
+      this.maxLevel = level;
+      this.entry = id;
+    }
+
+    state.phase = 'DONE';
+    state.msg = `Insertion of #${id} complete.`;
+    state.focusNode = null;
+    state.checkNode = null;
+    state.candidates = [];
+    state.results = [];
+    yield {...state};
+  }
+
+  pruneToM(nodeId, l) {
+    const n = this.nodes[nodeId];
+    const nbs = [...n.neighbors(l)];
+    if (nbs.length <= this.M) return;
+    // Heuristic: Keep closest
+    nbs.sort((a,b) => this.dist(n, this.nodes[a]) - this.dist(n, this.nodes[b]));
+    const keep = new Set(nbs.slice(0, this.M));
+    n.edges.set(l, keep);
+  }
+}
+
+/* =========================
+   App & Render Logic
+========================= */
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const statusText = document.getElementById("statusText");
+const queueText = document.getElementById("queueText");
+const hudMain = document.getElementById("hud-main");
+
+let hnsw = null;
+let allPts = [];
+let pointIndex = 0;
+let generator = null; // Current point insertion generator
+let currentState = null; // Last yielded state
+let timer = null;
+let rng = null;
+
+// Settings
+const COLORS = ["#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd","#8c564b"];
+
+function init() {
+  const seed = +document.getElementById("rngSeed").value || 42;
+  const N = +document.getElementById("nPoints").value;
+  const M = +document.getElementById("mDegree").value;
+  const efC = +document.getElementById("efc").value;
+  const mL = +document.getElementById("mL").value;
+
+  rng = mulberry32(seed);
+  
+  // Generate points
+  allPts = [];
+  for(let i=0; i<N; i++) {
+     allPts.push({ x: rng()*0.86+0.07, y: rng()*0.86+0.07 });
+  }
+
+  hnsw = new HNSW({M, efC, mL, rng});
+  pointIndex = 0;
+  generator = null;
+  currentState = null;
+  
+  stopAuto();
+  render();
+}
+
+function nextMicroStep() {
+  if (pointIndex >= allPts.length && !generator) return;
+
+  // If no active generator, start one for the next point
+  if (!generator) {
+    const p = allPts[pointIndex];
+    generator = hnsw.insertGenerator(p.x, p.y, pointIndex);
+  }
+
+  const res = generator.next();
+  
+  if (res.done) {
+    // Current point finished
+    generator = null;
+    pointIndex++;
+    currentState = null;
+    render();
+    if (pointIndex < allPts.length && timer) {
+      // If Auto playing, continue immediately
+    } else {
+      stopAuto(); // Stop if manual stepping finished a point
+    }
+    return;
+  }
+
+  currentState = res.value;
+  updateUI();
+  render();
+}
+
+function skipCurrentPoint() {
+  if (pointIndex >= allPts.length) return;
+  // If generator exists, exhaust it
+  if (generator) {
+    let res = generator.next();
+    while(!res.done) res = generator.next();
+    generator = null;
+    pointIndex++;
+  } else {
+    // Run full insert instantly
+    const p = allPts[pointIndex];
+    const gen = hnsw.insertGenerator(p.x, p.y, pointIndex);
+    let res = gen.next();
+    while(!res.done) res = gen.next();
+    pointIndex++;
+  }
+  currentState = null;
+  render();
+}
+
+function startAuto() {
+  if (timer) return;
+  const speed = +document.getElementById("speed").value;
+  const delay = Math.max(10, 1000 / speed);
+  
+  document.getElementById("btnAuto").textContent = "⏸ 暂停";
+  document.getElementById("btnAuto").onclick = stopAuto;
+
+  timer = setInterval(() => {
+    if (pointIndex >= allPts.length && !generator) {
+      stopAuto();
+      return;
+    }
+    nextMicroStep();
+  }, delay);
+}
+
+function stopAuto() {
+  if (timer) clearInterval(timer);
+  timer = null;
+  document.getElementById("btnAuto").textContent = "▶ 自动播放";
+  document.getElementById("btnAuto").onclick = startAuto;
+}
+
+function updateUI() {
+  if (!currentState) {
+    statusText.innerText = "Ready.";
+    queueText.innerHTML = "";
+    return;
+  }
+  statusText.innerText = currentState.msg;
+  
+  // Update Candidates & Results Queue Visualization
+  let html = "";
+  if (currentState.candidates.length > 0 || currentState.results.length > 0) {
+    html += `<div style="margin-top:4px; border-top:1px solid #ddd; padding-top:4px;">`;
+    html += `<div><span class="tag cand">Cands (To visit)</span></div>`;
+    html += currentState.candidates.map(c => 
+      `<span style="margin-right:6px; opacity:0.8">#${c.id}<small>(${c.d.toFixed(2)})</small></span>`
+    ).join("");
+    
+    html += `<div style="margin-top:4px;"><span class="tag check">W (Best ef)</span></div>`;
+    html += currentState.results.map(r => 
+      `<span style="margin-right:6px; font-weight:bold;">#${r.id}<small>(${r.d.toFixed(2)})</small></span>`
+    ).join("");
+    html += `</div>`;
+  }
+  queueText.innerHTML = html;
+}
+
+/* =========================
+   Rendering
+========================= */
+function resize() {
+  const r = cv.getBoundingClientRect();
+  cv.width = r.width; cv.height = r.height;
+}
+window.addEventListener("resize", () => { resize(); render(); });
+
+function toXY(node, layer, maxL, W, H) {
+  // Same logic as before: square aspect ratio
+  const layers = Math.max(1, maxL + 1);
+  const bandH = (H - 60) / layers;
+  const size = Math.min(W - 40, bandH - 20);
+  const offX = 20 + (W - 40 - size) / 2;
+  const layerTop = 40 + (maxL - layer) * bandH;
+  const offY = layerTop + (bandH - size) / 2 + 10;
+  
+  return {
+    x: offX + node.x * size,
+    y: offY + node.y * size
+  };
+}
+
+function render() {
+  resize();
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0,0,W,H);
+
+  const maxL = Math.max(0, hnsw.maxLevel, currentState ? (currentState.target.level > hnsw.maxLevel ? currentState.target.level : 0) : 0);
+  
+  // 1. Background Layers
+  const layers = Math.max(1, maxL + 1);
+  const bandH = (H - 60) / layers;
+  
+  for (let l=maxL; l>=0; l--) {
+    const y = 40 + (maxL - l)*bandH;
+    ctx.fillStyle = l%2===0 ? "rgba(0,0,0,0.02)" : "rgba(0,0,0,0)";
+    ctx.fillRect(0, y, W, bandH);
+    ctx.fillStyle = "#aaa"; ctx.font = "bold 12px monospace";
+    ctx.fillText(`Layer ${l}`, 10, y+16);
+  }
+
+  // 2. Existing Edges
+  ctx.lineWidth = 1;
+  for (let l=maxL; l>=0; l--) {
+    const c = COLORS[l % COLORS.length];
+    ctx.strokeStyle = c + "44"; // light alpha
+    
+    for (const n of hnsw.nodes) {
+      if (n.level < l) continue;
+      const p1 = toXY(n, l, maxL, W, H);
+      for (const nb of n.neighbors(l)) {
+        if (nb < n.id) continue; // draw once
+        const n2 = hnsw.nodes[nb];
+        const p2 = toXY(n2, l, maxL, W, H);
+        ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+      }
+    }
+  }
+
+  // 3. Dynamic State Visualization (The "Microscope")
+  if (currentState) {
+    const l = currentState.layer;
+    if (l >= 0) { // Only highlight if we are in a specific layer
+      // Target Node (Red)
+      const tNode = currentState.target;
+      const tP = toXY(tNode, l, maxL, W, H); // Project target to current layer
+
+      // Highlight Candidates (Green Boxes)
+      if (currentState.candidates) {
+        ctx.strokeStyle = "#28a745"; ctx.lineWidth = 2;
+        for (const c of currentState.candidates) {
+          const n = hnsw.nodes[c.id];
+          const p = toXY(n, l, maxL, W, H);
+          ctx.strokeRect(p.x-6, p.y-6, 12, 12);
+        }
+      }
+
+      // Highlight Results W (Solid dots overlay)
+      if (currentState.results) {
+        ctx.fillStyle = "#28a745"; 
+        for (const r of currentState.results) {
+          const n = hnsw.nodes[r.id];
+          const p = toXY(n, l, maxL, W, H);
+          ctx.beginPath(); ctx.arc(p.x, p.y, 2, 0, Math.PI*2); ctx.fill();
+        }
+      }
+
+      // Focus Node (Blue Ring - "Eye")
+      if (currentState.focusNode !== null) {
+        let fid = (typeof currentState.focusNode === 'object') ? currentState.focusNode.id : currentState.focusNode;
+        const fn = hnsw.nodes[fid];
+        const fp = toXY(fn, l, maxL, W, H);
+        
+        ctx.strokeStyle = "#007bff"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(fp.x, fp.y, 10, 0, Math.PI*2); ctx.stroke();
+        
+        // Connect Eye to Target (Visual distance)
+        ctx.strokeStyle = "#007bff"; ctx.lineWidth = 1; ctx.setLineDash([2,2]);
+        ctx.beginPath(); ctx.moveTo(fp.x, fp.y); ctx.lineTo(tP.x, tP.y); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Check Node (Orange Line - "Checking")
+      if (currentState.checkNode !== null) {
+        const cn = hnsw.nodes[currentState.checkNode];
+        const cp = toXY(cn, l, maxL, W, H);
+        
+        let fid = (typeof currentState.focusNode === 'object') ? currentState.focusNode.id : currentState.focusNode;
+        const fn = hnsw.nodes[fid];
+        const fp = toXY(fn, l, maxL, W, H);
+
+        ctx.strokeStyle = "#ffc107"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(fp.x, fp.y); ctx.lineTo(cp.x, cp.y); ctx.stroke();
+      }
+      
+      // Draw Target Ghost on this layer
+      ctx.fillStyle = "#d00";
+      ctx.beginPath(); ctx.arc(tP.x, tP.y, 4, 0, Math.PI*2); ctx.fill();
+      ctx.fillText("T", tP.x+6, tP.y);
+    }
+  }
+
+  // 4. Draw Nodes
+  for (let l=maxL; l>=0; l--) {
+    const c = COLORS[l % COLORS.length];
+    for (const n of hnsw.nodes) {
+      if (n.level < l) continue;
+      const p = toXY(n, l, maxL, W, H);
+      
+      ctx.fillStyle = c;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI*2); ctx.fill();
+      
+      // Label
+      ctx.fillStyle = "#666"; ctx.font = "10px monospace";
+      ctx.fillText(n.id, p.x-4, p.y-5);
+    }
+  }
+
+  // HUD
+  hudMain.innerHTML = `Inserted: ${pointIndex}/${allPts.length}<br>Entry: #${hnsw.entry}`;
+}
+
+// Bind Events
+document.getElementById("btnMicro").onclick = nextMicroStep;
+document.getElementById("btnSkip").onclick = skipCurrentPoint;
+document.getElementById("btnReset").onclick = init;
+document.getElementById("speed").onchange = () => { if(timer) { stopAuto(); startAuto(); } };
+document.getElementById("rngSeed").onchange = init;
+["nPoints","mDegree","efc","mL"].forEach(id=>document.getElementById(id).onchange=init);
+
+// Start
+init();
+</script>
+</body>
+</html>

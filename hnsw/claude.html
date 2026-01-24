@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HNSW算法可视化 - 动态生成过程</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 30px;
+        }
+        h1 {
+            text-align: center;
+            color: #4a5568;
+            margin-bottom: 30px;
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+            background: #f7fafc;
+            padding: 20px;
+            border-radius: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            background: #4299e1;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        button:hover {
+            background: #3182ce;
+            transform: translateY(-2px);
+        }
+        button:disabled {
+            background: #cbd5e0;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .canvas-container {
+            position: relative;
+            background: #fafbfc;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.06);
+        }
+        canvas {
+            display: block;
+            margin: 0 auto;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            background: white;
+        }
+        .info-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+            padding: 20px;
+            background: #f7fafc;
+            border-radius: 10px;
+        }
+        .info-item {
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            border-left: 4px solid #4299e1;
+        }
+        .info-item h3 {
+            margin: 0 0 10px 0;
+            color: #2d3748;
+            font-size: 14px;
+        }
+        .info-item p {
+            margin: 0;
+            font-size: 18px;
+            font-weight: bold;
+            color: #4a5568;
+        }
+        .legend {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            margin-top: 20px;
+            padding: 15px;
+            background: #edf2f7;
+            border-radius: 8px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid #333;
+        }
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        input[type="range"] {
+            width: 150px;
+        }
+        .layer-info {
+            margin-left: auto;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        .distance-tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 HNSW (Hierarchical Navigable Small World) 算法可视化</h1>
+
+        <div class="controls">
+            <button id="startBtn" onclick="startVisualization()">开始生成</button>
+            <button id="pauseBtn" onclick="pauseVisualization()" disabled>暂停</button>
+            <button id="resetBtn" onclick="resetVisualization()">重置</button>
+            <button id="stepBtn" onclick="stepVisualization()">单步执行</button>
+
+            <div class="speed-control">
+                <label for="speed">动画速度:</label>
+                <input type="range" id="speed" min="100" max="2000" value="1000" step="100">
+                <span id="speedValue">1000ms</span>
+            </div>
+
+            <div class="layer-info">
+                <label>
+                    <input type="checkbox" id="showDistances" checked> 显示距离
+                </label>
+                <label>
+                    <input type="checkbox" id="showLabels" checked> 显示节点标签
+                </label>
+            </div>
+        </div>
+
+        <div class="canvas-container">
+            <canvas id="canvas" width="1000" height="600"></canvas>
+            <div class="distance-tooltip" id="tooltip"></div>
+        </div>
+
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-color" style="background: #FF6B6B;"></div>
+                <span>层级 0（基础层）</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #4ECDC4;"></div>
+                <span>层级 1</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #45B7D1;"></div>
+                <span>层级 2</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #96CEB4;"></div>
+                <span>层级 3+</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #FFD93D;"></div>
+                <span>当前插入节点</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #6C5CE7;"></div>
+                <span>正在建立连接</span>
+            </div>
+        </div>
+
+        <div class="info-panel">
+            <div class="info-item">
+                <h3>总节点数</h3>
+                <p id="nodeCount">0</p>
+            </div>
+            <div class="info-item">
+                <h3>总连接数</h3>
+                <p id="edgeCount">0</p>
+            </div>
+            <div class="info-item">
+                <h3>最高层级</h3>
+                <p id="maxLayer">0</p>
+            </div>
+            <div class="info-item">
+                <h3>当前操作</h3>
+                <p id="currentOp">等待开始...</p>
+            </div>
+            <div class="info-item">
+                <h3>M参数(最大连接数)</h3>
+                <p id="mParam">16</p>
+            </div>
+            <div class="info-item">
+                <h3>mL参数(层级概率)</h3>
+                <p id="mlParam">1/ln(2)</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const tooltip = document.getElementById('tooltip');
+
+        // HNSW参数
+        const M = 16;  // 最大连接数
+        const maxM = M;
+        const maxM0 = M * 2;  // 第0层的最大连接数
+        const mL = 1.0 / Math.log(2.0);  // 层级分配概率参数
+        const seed = 0;
+
+        // 可视化参数
+        let nodes = [];
+        let edges = [];
+        let isRunning = false;
+        let animationSpeed = 1000;
+        let currentNodeIndex = 0;
+        let graph = {}; // 分层图结构
+
+        // 颜色配置
+        const layerColors = [
+            '#FF6B6B',  // 层级0 - 红色
+            '#4ECDC4',  // 层级1 - 青色
+            '#45B7D1',  // 层级2 - 蓝色
+            '#96CEB4',  // 层级3+ - 绿色
+        ];
+
+        // 速度控制
+        document.getElementById('speed').addEventListener('input', (e) => {
+            animationSpeed = parseInt(e.value);
+            document.getElementById('speedValue').textContent = animationSpeed + 'ms';
+        });
+
+        // 生成随机二维点
+        function generateRandomPoint(id) {
+            return {
+                id: id,
+                x: Math.random() * (canvas.width - 100) + 50,
+                y: Math.random() * (canvas.height - 100) + 50,
+                layer: selectLayer(),
+                connections: {},
+                highlighted: false
+            };
+        }
+
+        // 选择节点层级（使用指数衰减分布）
+        function selectLayer() {
+            const level = Math.floor(-Math.log(Math.random()) * mL);
+            return level;
+        }
+
+        // 计算两点之间的欧几里得距离
+        function distance(node1, node2) {
+            const dx = node1.x - node2.x;
+            const dy = node1.y - node2.y;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        // 初始化HNSW结构
+        function initHNSW() {
+            nodes = [];
+            edges = [];
+            graph = {};
+            currentNodeIndex = 0;
+
+            // 生成预定义的节点（但还未插入到图中）
+            for (let i = 0; i < 20; i++) {
+                const node = generateRandomPoint(i);
+                nodes.push(node);
+            }
+
+            updateInfo();
+        }
+
+        // 插入节点到HNSW
+        async function insertNode(nodeIndex) {
+            if (nodeIndex >= nodes.length) return;
+
+            const newNode = nodes[nodeIndex];
+            newNode.highlighted = true;
+
+            // 初始化该节点在各层的连接
+            for (let lc = 0; lc <= newNode.layer; lc++) {
+                if (!graph[lc]) graph[lc] = {};
+                graph[lc][newNode.id] = new Set();
+                newNode.connections[lc] = new Set();
+            }
+
+            document.getElementById('currentOp').textContent = `插入节点 ${newNode.id} (层级 ${newNode.layer})`;
+
+            if (nodeIndex === 0) {
+                // 第一个节点，直接作为入口点
+                draw();
+                await sleep(animationSpeed);
+            } else {
+                // 查找最近邻并建立连接
+                await findAndConnect(newNode, nodeIndex);
+            }
+
+            newNode.highlighted = false;
+            updateInfo();
+        }
+
+        // 查找最近邻并建立连接
+        async function findAndConnect(newNode, nodeIndex) {
+            const W = new Set();
+
+            // 从最高层开始搜索
+            let entryPoint = nodes[0]; // 使用第一个节点作为入口点
+
+            for (let lc = newNode.layer; lc >= 0; lc--) {
+                const candidates = searchLayer(newNode, entryPoint, 1, lc, nodeIndex);
+                const m = lc === 0 ? maxM0 : maxM;
+
+                // 获取M个最近邻
+                const neighbors = getMNearest(newNode, candidates, m, nodeIndex, lc);
+
+                // 建立连接
+                for (const neighbor of neighbors) {
+                    await connectNodes(newNode, neighbor, lc);
+                }
+
+                // 修剪邻居的连接（如果超过M）
+                for (const neighbor of neighbors) {
+                    await pruneConnections(neighbor, lc, lc === 0 ? maxM0 : maxM);
+                }
+            }
+        }
+
+        // 在指定层搜索最近邻
+        function searchLayer(target, entryPoint, ef, layer, maxIndex) {
+            const visited = new Set();
+            const candidates = [];
+            const w = [];
+
+            // 只考虑已插入的节点
+            for (let i = 0; i < maxIndex; i++) {
+                if (nodes[i].layer >= layer) {
+                    candidates.push(nodes[i]);
+                }
+            }
+
+            // 按距离排序
+            candidates.sort((a, b) => distance(target, a) - distance(target, b));
+
+            return candidates.slice(0, ef);
+        }
+
+        // 获取M个最近邻
+        function getMNearest(target, candidates, m, maxIndex, layer) {
+            // 过滤出在当前层存在的节点
+            const validCandidates = candidates.filter(c =>
+                c.id < maxIndex && c.layer >= layer && c.id !== target.id
+            );
+
+            // 按距离排序并返回前M个
+            validCandidates.sort((a, b) => distance(target, a) - distance(target, b));
+            return validCandidates.slice(0, m);
+        }
+
+        // 连接两个节点
+        async function connectNodes(node1, node2, layer) {
+            if (node1.id === node2.id) return;
+
+            // 添加双向连接
+            if (!node1.connections[layer]) node1.connections[layer] = new Set();
+            if (!node2.connections[layer]) node2.connections[layer] = new Set();
+
+            node1.connections[layer].add(node2.id);
+            node2.connections[layer].add(node1.id);
+
+            // 添加边用于可视化
+            const edgeId = `${Math.min(node1.id, node2.id)}-${Math.max(node1.id, node2.id)}-${layer}`;
+            if (!edges.find(e => e.id === edgeId)) {
+                const newEdge = {
+                    id: edgeId,
+                    source: node1,
+                    target: node2,
+                    layer: layer,
+                    distance: distance(node1, node2),
+                    highlighted: true
+                };
+                edges.push(newEdge);
+
+                draw();
+                await sleep(animationSpeed / 2);
+                newEdge.highlighted = false;
+            }
+        }
+
+        // 修剪连接
+        async function pruneConnections(node, layer, maxConnections) {
+            if (!node.connections[layer]) return;
+
+            const connections = Array.from(node.connections[layer]);
+            if (connections.length <= maxConnections) return;
+
+            // 获取所有连接的节点并按距离排序
+            const connectedNodes = connections.map(id => nodes[id]).filter(n => n);
+            connectedNodes.sort((a, b) => distance(node, a) - distance(node, b));
+
+            // 保留最近的maxConnections个连接
+            const keepNodes = connectedNodes.slice(0, maxConnections);
+            const keepIds = new Set(keepNodes.map(n => n.id));
+
+            // 删除多余的连接
+            for (const id of connections) {
+                if (!keepIds.has(id)) {
+                    node.connections[layer].delete(id);
+                    nodes[id].connections[layer].delete(node.id);
+
+                    // 删除边
+                    const edgeId = `${Math.min(node.id, id)}-${Math.max(node.id, id)}-${layer}`;
+                    edges = edges.filter(e => e.id !== edgeId);
+                }
+            }
+        }
+
+        // 绘制函数
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const showDistances = document.getElementById('showDistances').checked;
+            const showLabels = document.getElementById('showLabels').checked;
+
+            // 绘制边（连接）
+            edges.forEach(edge => {
+                ctx.beginPath();
+                ctx.moveTo(edge.source.x, edge.source.y);
+                ctx.lineTo(edge.target.x, edge.target.y);
+
+                // 根据层级设置边的样式
+                if (edge.highlighted) {
+                    ctx.strokeStyle = '#6C5CE7';
+                    ctx.lineWidth = 3;
+                } else {
+                    const alpha = 0.3 + (edge.layer * 0.2);
+                    ctx.strokeStyle = `rgba(100, 100, 100, ${Math.min(alpha, 0.8)})`;
+                    ctx.lineWidth = 1 + edge.layer * 0.5;
+                }
+
+                ctx.stroke();
+
+                // 显示距离
+                if (showDistances && !edge.highlighted) {
+                    const midX = (edge.source.x + edge.target.x) / 2;
+                    const midY = (edge.source.y + edge.target.y) / 2;
+
+                    ctx.save();
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                    ctx.font = '10px Arial';
+                    ctx.fillText(Math.round(edge.distance), midX, midY);
+                    ctx.restore();
+                }
+            });
+
+            // 绘制节点
+            nodes.forEach((node, index) => {
+                if (index >= currentNodeIndex && !isRunning) return;
+
+                // 节点大小根据层级变化
+                const radius = 8 + node.layer * 3;
+
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI);
+
+                // 设置节点颜色
+                if (node.highlighted) {
+                    ctx.fillStyle = '#FFD93D';
+                    ctx.strokeStyle = '#F39C12';
+                    ctx.lineWidth = 3;
+                } else {
+                    ctx.fillStyle = layerColors[Math.min(node.layer, 3)];
+                    ctx.strokeStyle = '#333';
+                    ctx.lineWidth = 2;
+                }
+
+                ctx.fill();
+                ctx.stroke();
+
+                // 显示节点标签
+                if (showLabels) {
+                    ctx.fillStyle = '#000';
+                    ctx.font = 'bold 12px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(node.id, node.x, node.y);
+                }
+
+                // 显示层级
+                ctx.fillStyle = '#666';
+                ctx.font = '10px Arial';
+                ctx.fillText(`L${node.layer}`, node.x, node.y + radius + 12);
+            });
+        }
+
+        // 更新信息面板
+        function updateInfo() {
+            document.getElementById('nodeCount').textContent = currentNodeIndex;
+            document.getElementById('edgeCount').textContent = edges.length;
+
+            const maxLayer = Math.max(0, ...nodes.slice(0, currentNodeIndex).map(n => n.layer));
+            document.getElementById('maxLayer').textContent = maxLayer;
+        }
+
+        // 辅助函数：延迟
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        // 控制函数
+        async function startVisualization() {
+            if (isRunning) return;
+
+            isRunning = true;
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('pauseBtn').disabled = false;
+            document.getElementById('stepBtn').disabled = true;
+
+            while (currentNodeIndex < nodes.length && isRunning) {
+                await insertNode(currentNodeIndex);
+                currentNodeIndex++;
+
+                if (!isRunning) break;
+            }
+
+            isRunning = false;
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('pauseBtn').disabled = true;
+            document.getElementById('stepBtn').disabled = false;
+
+            if (currentNodeIndex >= nodes.length) {
+                document.getElementById('currentOp').textContent = '生成完成！';
+            }
+        }
+
+        function pauseVisualization() {
+            isRunning = false;
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('pauseBtn').disabled = true;
+            document.getElementById('stepBtn').disabled = false;
+            document.getElementById('currentOp').textContent = '已暂停';
+        }
+
+        function resetVisualization() {
+            isRunning = false;
+            currentNodeIndex = 0;
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('pauseBtn').disabled = true;
+            document.getElementById('stepBtn').disabled = false;
+            initHNSW();
+            draw();
+        }
+
+        async function stepVisualization() {
+            if (currentNodeIndex < nodes.length) {
+                document.getElementById('stepBtn').disabled = true;
+                await insertNode(currentNodeIndex);
+                currentNodeIndex++;
+                document.getElementById('stepBtn').disabled = false;
+
+                if (currentNodeIndex >= nodes.length) {
+                    document.getElementById('currentOp').textContent = '生成完成！';
+                }
+            }
+        }
+
+        // 鼠标悬停显示距离
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            let hoveredEdge = null;
+            let minDist = Infinity;
+
+            // 检查是否悬停在边上
+            edges.forEach(edge => {
+                const dist = distanceToLineSegment(
+                    x, y,
+                    edge.source.x, edge.source.y,
+                    edge.target.x, edge.target.y
+                );
+
+                if (dist < 5 && dist < minDist) {
+                    minDist = dist;
+                    hoveredEdge = edge;
+                }
+            });
+
+            if (hoveredEdge) {
+                tooltip.style.display = 'block';
+                tooltip.style.left = e.clientX + 10 + 'px';
+                tooltip.style.top = e.clientY - 30 + 'px';
+                tooltip.textContent = `距离: ${hoveredEdge.distance.toFixed(2)} | 层级: ${hoveredEdge.layer}`;
+            } else {
+                tooltip.style.display = 'none';
+            }
+        });
+
+        // 计算点到线段的距离
+        function distanceToLineSegment(px, py, x1, y1, x2, y2) {
+            const A = px - x1;
+            const B = py - y1;
+            const C = x2 - x1;
+            const D = y2 - y1;
+
+            const dot = A * C + B * D;
+            const lenSq = C * C + D * D;
+            let param = -1;
+
+            if (lenSq !== 0) {
+                param = dot / lenSq;
+            }
+
+            let xx, yy;
+
+            if (param < 0) {
+                xx = x1;
+                yy = y1;
+            } else if (param > 1) {
+                xx = x2;
+                yy = y2;
+            } else {
+                xx = x1 + param * C;
+                yy = y1 + param * D;
+            }
+
+            const dx = px - xx;
+            const dy = py - yy;
+
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        // 复选框事件监听
+        document.getElementById('showDistances').addEventListener('change', draw);
+        document.getElementById('showLabels').addEventListener('change', draw);
+
+        // 初始化
+        initHNSW();
+        draw();
+    </script>
+</body>
+</html>

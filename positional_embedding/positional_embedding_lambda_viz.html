@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Positional Encoding Visualization</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            max-width: 600px;
+            width: 100%;
+        }
+        
+        h2 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #333;
+            font-size: 24px;
+        }
+        
+        .slider-container {
+            margin-bottom: 30px;
+        }
+        
+        .slider-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .slider-label {
+            font-size: 14px;
+            font-weight: 500;
+            color: #333;
+        }
+        
+        .rotation-speed {
+            font-size: 12px;
+            color: #666;
+        }
+        
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #e5e7eb;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+        }
+        
+        input[type="range"]::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+            border: none;
+        }
+        
+        .slider-markers {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 5px;
+            font-size: 11px;
+            color: #9ca3af;
+        }
+        
+        .svg-container {
+            display: flex;
+            justify-content: center;
+        }
+        
+        svg {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Positional Encoding Visualization</h2>
+        
+        <div class="slider-container">
+            <div class="slider-header">
+                <span class="slider-label">λ = <span id="lambdaValue">50</span></span>
+                <span class="rotation-speed" id="rotationSpeed">(medium rotation)</span>
+            </div>
+            <input type="range" id="lambdaSlider" min="10" max="1000" value="50" step="10">
+            <div class="slider-markers">
+                <span>10</span>
+                <span>500</span>
+                <span>1000</span>
+            </div>
+        </div>
+        
+        <div class="svg-container">
+            <svg id="canvas" width="300" height="300"></svg>
+        </div>
+    </div>
+
+    <script>
+        const positions = [0, 20, 40, 60, 80];
+        const colors = ['#e74c3c', '#e67e22', '#f39c12', '#27ae60', '#3498db'];
+        const circleRadius = 100;
+        const centerX = 150;
+        const centerY = 150;
+        
+        const slider = document.getElementById('lambdaSlider');
+        const lambdaValue = document.getElementById('lambdaValue');
+        const rotationSpeed = document.getElementById('rotationSpeed');
+        const canvas = document.getElementById('canvas');
+        
+        function getRotationSpeedText(lambda) {
+            if (lambda < 100) return '(fast rotation)';
+            if (lambda > 500) return '(slow rotation)';
+            return '(medium rotation)';
+        }
+        
+        function calculatePoint(pos, lambda) {
+            const angle = pos / lambda;
+            const x = centerX + circleRadius * Math.cos(angle);
+            const y = centerY - circleRadius * Math.sin(angle);
+            return { x, y };
+        }
+        
+        function drawVisualization(lambda) {
+            // Clear canvas
+            canvas.innerHTML = '';
+            
+            // Draw circle
+            const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            circle.setAttribute('cx', centerX);
+            circle.setAttribute('cy', centerY);
+            circle.setAttribute('r', circleRadius);
+            circle.setAttribute('fill', 'none');
+            circle.setAttribute('stroke', '#d1d5db');
+            circle.setAttribute('stroke-width', '1.5');
+            canvas.appendChild(circle);
+            
+            // Draw axes
+            const axisX = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            axisX.setAttribute('x1', centerX - circleRadius);
+            axisX.setAttribute('y1', centerY);
+            axisX.setAttribute('x2', centerX + circleRadius);
+            axisX.setAttribute('y2', centerY);
+            axisX.setAttribute('stroke', '#e5e7eb');
+            axisX.setAttribute('stroke-width', '1');
+            canvas.appendChild(axisX);
+            
+            const axisY = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            axisY.setAttribute('x1', centerX);
+            axisY.setAttribute('y1', centerY - circleRadius);
+            axisY.setAttribute('x2', centerX);
+            axisY.setAttribute('y2', centerY + circleRadius);
+            axisY.setAttribute('stroke', '#e5e7eb');
+            axisY.setAttribute('stroke-width', '1');
+            canvas.appendChild(axisY);
+            
+            // Create defs for arrowheads
+            const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+            positions.forEach((pos, i) => {
+                const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+                marker.setAttribute('id', `arrowhead-${i}`);
+                marker.setAttribute('markerWidth', '10');
+                marker.setAttribute('markerHeight', '10');
+                marker.setAttribute('refX', '9');
+                marker.setAttribute('refY', '3');
+                marker.setAttribute('orient', 'auto');
+                
+                const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                polygon.setAttribute('points', '0 0, 10 3, 0 6');
+                polygon.setAttribute('fill', colors[i]);
+                
+                marker.appendChild(polygon);
+                defs.appendChild(marker);
+            });
+            canvas.appendChild(defs);
+            
+            // Draw arrows and labels for each position
+            positions.forEach((pos, i) => {
+                const point = calculatePoint(pos, lambda);
+                
+                // Draw arrow
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('x1', centerX);
+                line.setAttribute('y1', centerY);
+                line.setAttribute('x2', point.x);
+                line.setAttribute('y2', point.y);
+                line.setAttribute('stroke', colors[i]);
+                line.setAttribute('stroke-width', '2');
+                line.setAttribute('marker-end', `url(#arrowhead-${i})`);
+                line.setAttribute('opacity', '0.8');
+                canvas.appendChild(line);
+                
+                // Draw label
+                const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                const offsetX = (point.x - centerX) * 0.15;
+                const offsetY = (point.y - centerY) * 0.15;
+                text.setAttribute('x', point.x + offsetX);
+                text.setAttribute('y', point.y + offsetY);
+                text.setAttribute('font-size', '11');
+                text.setAttribute('fill', colors[i]);
+                text.setAttribute('text-anchor', 'middle');
+                text.setAttribute('font-weight', '600');
+                text.textContent = `p=${pos}`;
+                canvas.appendChild(text);
+            });
+            
+            // Draw center point
+            const centerPoint = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            centerPoint.setAttribute('cx', centerX);
+            centerPoint.setAttribute('cy', centerY);
+            centerPoint.setAttribute('r', '3');
+            centerPoint.setAttribute('fill', '#374151');
+            canvas.appendChild(centerPoint);
+            
+            // Draw axis labels
+            const cosLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            cosLabel.setAttribute('x', centerX + circleRadius + 15);
+            cosLabel.setAttribute('y', centerY + 5);
+            cosLabel.setAttribute('font-size', '12');
+            cosLabel.setAttribute('fill', '#6b7280');
+            cosLabel.textContent = 'cos(θ)';
+            canvas.appendChild(cosLabel);
+            
+            const sinLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            sinLabel.setAttribute('x', centerX - 5);
+            sinLabel.setAttribute('y', centerY - circleRadius - 10);
+            sinLabel.setAttribute('font-size', '12');
+            sinLabel.setAttribute('fill', '#6b7280');
+            sinLabel.setAttribute('text-anchor', 'end');
+            sinLabel.textContent = 'sin(θ)';
+            canvas.appendChild(sinLabel);
+        }
+        
+        slider.addEventListener('input', (e) => {
+            const lambda = parseInt(e.target.value);
+            lambdaValue.textContent = lambda;
+            rotationSpeed.textContent = getRotationSpeedText(lambda);
+            drawVisualization(lambda);
+        });
+        
+        // Initial draw
+        drawVisualization(50);
+    </script>
+</body>
+</html>

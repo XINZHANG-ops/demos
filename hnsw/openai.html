@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HNSW 从 0 构建的动态可视化（2D）</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans SC", Arial;
+      display: grid; grid-template-columns: 360px 1fr; height: 100vh;
+    }
+    #panel {
+      padding: 14px 14px 10px; border-right: 1px solid rgba(128,128,128,.25);
+      overflow: auto;
+    }
+    #panel h2 { margin: 0 0 10px; font-size: 16px; }
+    .row { display: grid; grid-template-columns: 1fr 92px; gap: 10px; align-items: center; margin: 8px 0; }
+    .row label { font-size: 13px; opacity: .95; }
+    .row input[type="range"] { width: 100%; }
+    .row input[type="number"] { width: 92px; padding: 4px 6px; }
+    .btns { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 8px; }
+    button {
+      padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(128,128,128,.35);
+      background: rgba(128,128,128,.10); cursor: pointer;
+    }
+    button:hover { background: rgba(128,128,128,.16); }
+    .check { display: flex; gap: 10px; align-items: center; margin: 8px 0; font-size: 13px; }
+    .muted { opacity: .75; font-size: 12px; line-height: 1.35; margin-top: 10px; }
+    .legend { font-size: 12px; opacity: .9; margin-top: 10px; }
+    .legend .sw { display:inline-block; width: 10px; height:10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+    #wrap { position: relative; }
+    canvas { width: 100%; height: 100%; display: block; background: rgba(128,128,128,.04); }
+    #hud {
+      position: absolute; left: 12px; top: 10px; padding: 8px 10px;
+      border-radius: 12px; border: 1px solid rgba(128,128,128,.28);
+      background: rgba(0,0,0,.03); backdrop-filter: blur(6px);
+      font-size: 12px; line-height: 1.35; max-width: 520px;
+    }
+    .kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      padding: 0 6px; border-radius: 6px; border: 1px solid rgba(128,128,128,.35);
+      background: rgba(128,128,128,.10);
+    }
+  </style>
+</head>
+<body>
+  <div id="panel">
+    <h2>HNSW 构建可视化（2D）</h2>
+
+    <div class="btns">
+      <button id="btnPlay">▶ 播放</button>
+      <button id="btnStep">⏭ 单步插入</button>
+      <button id="btnReset">↩ 重置</button>
+    </div>
+
+    <div class="row">
+      <label>点数 N（小点更清楚）</label>
+      <input id="nPoints" type="number" min="5" max="60" value="22" />
+    </div>
+    <div class="row">
+      <label>M（每层最大连接数）</label>
+      <input id="mDegree" type="number" min="2" max="20" value="6" />
+    </div>
+    <div class="row">
+      <label>efConstruction（候选扩展）</label>
+      <input id="efc" type="number" min="4" max="80" value="18" />
+    </div>
+    <div class="row">
+      <label>层随机参数 mL（越大层数越高）</label>
+      <input id="mL" type="number" min="0.6" max="3.0" step="0.1" value="1.2" />
+    </div>
+
+    <div class="row">
+      <label>速度（插入/秒）</label>
+      <input id="speed" type="range" min="0.2" max="4" step="0.1" value="1.2" />
+    </div>
+
+    <div class="check">
+      <input id="showAllPairs" type="checkbox" />
+      <label for="showAllPairs">显示所有点对距离线（会很密）</label>
+    </div>
+    <div class="check">
+      <input id="showDistText" type="checkbox" />
+      <label for="showDistText">显示距离数字（建议关，太挤）</label>
+    </div>
+    <div class="check">
+      <input id="showGhost" type="checkbox" checked />
+      <label for="showGhost">在未出现的高层显示“幽灵点”轮廓</label>
+    </div>
+
+    <div class="muted">
+      交互：<span class="kbd">空格</span> 播放/暂停，
+      <span class="kbd">→</span> 单步，
+      <span class="kbd">R</span> 重置。<br/>
+      说明：每次插入一个新点，会从最高层入口点开始 greedy 下降，然后在每层用 efConstruction 做 best-first 搜索，
+      最后连接到该层最近的 M 个邻居（并裁剪对方度数）。
+    </div>
+
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div id="wrap">
+    <canvas id="cv"></canvas>
+    <div id="hud"></div>
+  </div>
+
+<script>
+/* =========================
+   小工具：随机数（可复现实验）
+========================= */
+function mulberry32(seed) {
+  let t = seed >>> 0;
+  return function() {
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function clamp(x,a,b){ return Math.max(a, Math.min(b,x)); }
+
+/* =========================
+   HNSW 数据结构（可视化版本）
+========================= */
+class Node {
+  constructor(id, x, y, level) {
+    this.id = id;
+    this.x = x; this.y = y;
+    this.level = level;
+    // edgesByLayer[l] = Set(neighborId)
+    this.edgesByLayer = new Map();
+  }
+  neighbors(l){
+    if(!this.edgesByLayer.has(l)) this.edgesByLayer.set(l, new Set());
+    return this.edgesByLayer.get(l);
+  }
+}
+
+class HNSW {
+  constructor({M=6, efC=18, mL=1.2, rng=Math.random}) {
+    this.M = M;
+    this.efC = efC;
+    this.mL = mL;
+    this.rng = rng;
+
+    this.nodes = [];           // all nodes
+    this.entry = null;         // node id
+    this.maxLevel = -1;
+
+    // 用于可视化：每次 insert 的“过程记录”
+    this.trace = null;
+  }
+
+  dist(a, b){
+    const dx = a.x - b.x, dy = a.y - b.y;
+    return Math.hypot(dx, dy);
+  }
+
+  randomLevel(){
+    // 常见做法：level ~ floor(-ln(U) * mL)
+    // mL 越大，产生高层的概率越高
+    const u = Math.max(1e-9, this.rng());
+    return Math.floor(-Math.log(u) * this.mL);
+  }
+
+  // greedy：在层 l 从入口点开始不断走向更近的邻居，直到局部最优
+  greedySearchLayer(qNode, entryId, l, traceStep){
+    let cur = entryId;
+    let improved = true;
+    const path = [cur];
+    while(improved){
+      improved = false;
+      const curNode = this.nodes[cur];
+      const curDist = this.dist(qNode, curNode);
+      let best = cur;
+      let bestDist = curDist;
+
+      for(const nb of curNode.neighbors(l)){
+        const d = this.dist(qNode, this.nodes[nb]);
+        if(d < bestDist){
+          bestDist = d;
+          best = nb;
+        }
+      }
+      if(best !== cur){
+        cur = best;
+        path.push(cur);
+        improved = true;
+      }
+    }
+    if(traceStep){
+      traceStep.greedyPaths.push({layer:l, path:[...path]});
+    }
+    return cur;
+  }
+
+  // efConstruction：best-first 搜索
+  // 返回：候选集合（按距离从小到大）
+  searchLayerEF(qNode, entryId, l, ef, traceStep){
+    // 简化实现：用数组当优先队列（点数小，足够）
+    const visited = new Set([entryId]);
+    let candidates = [{id: entryId, d: this.dist(qNode, this.nodes[entryId])}];
+    let results = [{id: entryId, d: candidates[0].d}];
+
+    function sortByD(arr){ arr.sort((a,b)=>a.d-b.d); }
+
+    sortByD(candidates);
+    sortByD(results);
+
+    const expansions = [];
+
+    while(candidates.length){
+      sortByD(candidates);
+      const c = candidates.shift(); // smallest
+      sortByD(results);
+      const worst = results[results.length - 1];
+
+      // 经典停止条件：如果当前最小候选已经比结果集中最差还差，就停
+      if(results.length >= ef && c.d > worst.d) break;
+
+      const cNode = this.nodes[c.id];
+      const exploredNeighbors = [];
+      for(const nb of cNode.neighbors(l)){
+        if(visited.has(nb)) continue;
+        visited.add(nb);
+        const d = this.dist(qNode, this.nodes[nb]);
+        exploredNeighbors.push({id: nb, d});
+        candidates.push({id: nb, d});
+        results.push({id: nb, d});
+      }
+      // 只保留 ef 个最好结果
+      sortByD(results);
+      if(results.length > ef) results = results.slice(0, ef);
+
+      expansions.push({from: c.id, explored: exploredNeighbors.map(e=>e.id)});
+    }
+
+    sortByD(results);
+    if(traceStep){
+      traceStep.efSearch.push({layer:l, entry:entryId, results: results.map(r=>r.id), expansions});
+    }
+    return results.map(r => r.id);
+  }
+
+  connect(aId, bId, l){
+    const a = this.nodes[aId], b = this.nodes[bId];
+    a.neighbors(l).add(bId);
+    b.neighbors(l).add(aId);
+  }
+
+  // 度数裁剪：若某个点在层 l 的邻居超过 M，保留最近的 M 个
+  pruneToM(nodeId, l){
+    const n = this.nodes[nodeId];
+    const nbs = [...n.neighbors(l)];
+    if(nbs.length <= this.M) return;
+    nbs.sort((i,j)=> this.dist(n, this.nodes[i]) - this.dist(n, this.nodes[j]));
+    const keep = new Set(nbs.slice(0, this.M));
+    n.edgesByLayer.set(l, keep);
+  }
+
+  insertPoint(x, y){
+    const stepTrace = {
+      newNodeId: null,
+      newNodeLevel: null,
+      greedyPaths: [],     // {layer, path:[ids]}
+      efSearch: [],        // {layer, entry, results:[ids], expansions:[{from, explored:[ids]}]}
+      chosenNeighbors: []  // {layer, neighbors:[ids]}
+    };
+
+    const level = this.randomLevel();
+    const id = this.nodes.length;
+    const q = new Node(id, x, y, level);
+    stepTrace.newNodeId = id;
+    stepTrace.newNodeLevel = level;
+
+    this.nodes.push(q);
+
+    if(this.entry === null){
+      this.entry = id;
+      this.maxLevel = level;
+      this.trace = stepTrace;
+      return stepTrace;
+    }
+
+    let curEntry = this.entry;
+
+    // 1) 从 maxLevel 一路 greedy 到 level+1
+    for(let l = this.maxLevel; l > level; l--){
+      curEntry = this.greedySearchLayer(q, curEntry, l, stepTrace);
+    }
+
+    // 2) 从 min(level, maxLevel) 下到 0：每层 efConstruction + 选邻居 + 连边
+    const upper = Math.min(level, this.maxLevel);
+    for(let l = upper; l >= 0; l--){
+      // 先 greedy 一下也行，但这里直接用 efSearch 起点为 curEntry（标准做法）
+      const candidates = this.searchLayerEF(q, curEntry, l, this.efC, stepTrace);
+
+      // 选最近的 M 个作为邻居（简化）
+      candidates.sort((i,j)=> this.dist(q, this.nodes[i]) - this.dist(q, this.nodes[j]));
+      const neighbors = candidates.slice(0, this.M);
+
+      stepTrace.chosenNeighbors.push({layer:l, neighbors:[...neighbors]});
+
+      // 连接新点到邻居（双向），并 prune
+      for(const nb of neighbors){
+        this.connect(id, nb, l);
+        this.pruneToM(nb, l);
+      }
+      this.pruneToM(id, l);
+
+      // 下一层的入口通常取最近点（这里取 neighbors[0] 或 curEntry）
+      if(neighbors.length) curEntry = neighbors[0];
+    }
+
+    // 3) 如果新点层级更高，更新 entry
+    if(level > this.maxLevel){
+      this.entry = id;
+      this.maxLevel = level;
+    }
+
+    this.trace = stepTrace;
+    return stepTrace;
+  }
+}
+
+/* =========================
+   可视化
+========================= */
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const hud = document.getElementById("hud");
+
+function resizeCanvas(){
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.floor(cv.clientWidth * dpr);
+  cv.height = Math.floor(cv.clientHeight * dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener("resize", resizeCanvas);
+
+const COLORS = [
+  "#4C78A8","#F58518","#54A24B","#E45756","#72B7B2",
+  "#B279A2","#FF9DA6","#9D755D","#BAB0AC"
+];
+
+function rgba(hex, a){
+  const h = hex.replace("#","");
+  const r = parseInt(h.slice(0,2),16);
+  const g = parseInt(h.slice(2,4),16);
+  const b = parseInt(h.slice(4,6),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+function drawLegend(maxLevel){
+  const el = document.getElementById("legend");
+  let html = `<div style="margin-top:6px;"><b>层颜色</b></div>`;
+  for(let l = maxLevel; l >= 0; l--){
+    const c = COLORS[l % COLORS.length];
+    html += `<div><span class="sw" style="background:${c}; opacity:.6;"></span>Layer ${l}</div>`;
+  }
+  el.innerHTML = html;
+}
+
+/* =========================
+   生成点集 & 动画控制
+========================= */
+let rngSeed = 42;
+let rng = mulberry32(rngSeed);
+
+function genPoints(n){
+  // 生成 [0,1]x[0,1] 的点（稍微分散一点：简单 rejection）
+  const pts = [];
+  const minD = 0.06;
+  let tries = 0;
+  while(pts.length < n && tries < n*500){
+    tries++;
+    const x = rng()*0.92 + 0.04;
+    const y = rng()*0.92 + 0.04;
+    let ok = true;
+    for(const p of pts){
+      if(Math.hypot(x-p.x, y-p.y) < minD){ ok = false; break; }
+    }
+    if(ok) pts.push({x,y});
+  }
+  // 如果 rejection 不够，补齐随机
+  while(pts.length < n){
+    pts.push({x: rng()*0.92 + 0.04, y: rng()*0.92 + 0.04});
+  }
+  return pts;
+}
+
+let allPts = [];
+let hnsw = null;
+let inserted = 0;
+let playing = false;
+let lastTick = 0;
+let accum = 0;
+
+function reset(){
+  rngSeed = 42;
+  rng = mulberry32(rngSeed);
+
+  const N = +document.getElementById("nPoints").value;
+  const M = +document.getElementById("mDegree").value;
+  const efC = +document.getElementById("efc").value;
+  const mL = +document.getElementById("mL").value;
+
+  allPts = genPoints(N);
+  hnsw = new HNSW({M, efC, mL, rng});
+  inserted = 0;
+  playing = false;
+  document.getElementById("btnPlay").textContent = "▶ 播放";
+  drawLegend(0);
+  render();
+}
+
+function stepInsert(){
+  if(inserted >= allPts.length) return;
+  const p = allPts[inserted];
+  hnsw.insertPoint(p.x, p.y);
+  inserted++;
+  drawLegend(Math.max(0, hnsw.maxLevel));
+  render();
+}
+
+function togglePlay(){
+  playing = !playing;
+  document.getElementById("btnPlay").textContent = playing ? "⏸ 暂停" : "▶ 播放";
+}
+
+document.getElementById("btnReset").addEventListener("click", reset);
+document.getElementById("btnStep").addEventListener("click", ()=>{ playing=false; document.getElementById("btnPlay").textContent="▶ 播放"; stepInsert(); });
+document.getElementById("btnPlay").addEventListener("click", togglePlay);
+
+["nPoints","mDegree","efc","mL"].forEach(id=>{
+  document.getElementById(id).addEventListener("change", reset);
+});
+["showAllPairs","showDistText","showGhost"].forEach(id=>{
+  document.getElementById(id).addEventListener("change", render);
+});
+
+window.addEventListener("keydown", (e)=>{
+  if(e.code === "Space"){ e.preventDefault(); togglePlay(); }
+  if(e.key === "ArrowRight"){ e.preventDefault(); playing=false; document.getElementById("btnPlay").textContent="▶ 播放"; stepInsert(); }
+  if(e.key.toLowerCase() === "r"){ e.preventDefault(); reset(); }
+});
+
+function loop(ts){
+  if(!lastTick) lastTick = ts;
+  const dt = (ts - lastTick) / 1000;
+  lastTick = ts;
+
+  if(playing){
+    const speed = +document.getElementById("speed").value;
+    accum += dt * speed;
+    // accum >= 1 -> 插入一次
+    while(accum >= 1){
+      accum -= 1;
+      if(inserted < allPts.length){
+        stepInsert();
+      }else{
+        playing = false;
+        document.getElementById("btnPlay").textContent = "▶ 播放";
+        break;
+      }
+    }
+  }
+
+  requestAnimationFrame(loop);
+}
+
+/* =========================
+   绘制逻辑
+========================= */
+function render(){
+  resizeCanvas();
+  const W = cv.clientWidth;
+  const H = cv.clientHeight;
+  ctx.clearRect(0,0,W,H);
+
+  // 如果还没初始化
+  if(!hnsw){
+    ctx.fillText("点击重置开始", 20, 20);
+    return;
+  }
+
+  const maxL = Math.max(0, hnsw.maxLevel);
+  const topPad = 50;
+  const bottomPad = 20;
+  const leftPad = 30;
+  const rightPad = 20;
+
+  const layers = Math.max(1, maxL + 1);
+  const bandH = (H - topPad - bottomPad) / layers;
+
+  function toXY(p, layer){
+    const x = leftPad + p.x * (W - leftPad - rightPad);
+    const y = topPad + (maxL - layer) * bandH + p.y * (bandH - 18) + 9;
+    return {x,y};
+  }
+
+  // 背景分层带
+  for(let l=maxL; l>=0; l--){
+    const y0 = topPad + (maxL - l) * bandH;
+    ctx.fillStyle = (l%2===0) ? "rgba(128,128,128,0.06)" : "rgba(128,128,128,0.03)";
+    ctx.fillRect(0, y0, W, bandH);
+
+    ctx.fillStyle = "rgba(80,80,80,0.8)";
+    ctx.font = "12px ui-monospace, monospace";
+    ctx.fillText(`Layer ${l}`, 12, y0 + 14);
+  }
+
+  const showAllPairs = document.getElementById("showAllPairs").checked;
+  const showDistText = document.getElementById("showDistText").checked;
+  const showGhost = document.getElementById("showGhost").checked;
+
+  // 先画“所有点对距离线”（为避免层数太多，只在 Layer 0 画）
+  if(showAllPairs && inserted > 1){
+    const l = 0;
+    const c = COLORS[l % COLORS.length];
+    ctx.strokeStyle = rgba(c, 0.10);
+    ctx.lineWidth = 1;
+
+    for(let i=0;i<inserted;i++){
+      for(let j=i+1;j<inserted;j++){
+        const a = hnsw.nodes[i], b = hnsw.nodes[j];
+        const A = toXY(a, l), B = toXY(b, l);
+        ctx.beginPath();
+        ctx.moveTo(A.x, A.y);
+        ctx.lineTo(B.x, B.y);
+        ctx.stroke();
+
+        if(showDistText){
+          const d = hnsw.dist(a,b);
+          const mx = (A.x+B.x)/2, my = (A.y+B.y)/2;
+          ctx.fillStyle = "rgba(60,60,60,0.75)";
+          ctx.font = "10px ui-monospace, monospace";
+          ctx.fillText(d.toFixed(2), mx+3, my-3);
+        }
+      }
+    }
+  }
+
+  // 画每层图：先画边，再画点
+  for(let l=maxL; l>=0; l--){
+    const c = COLORS[l % COLORS.length];
+
+    // 边
+    ctx.strokeStyle = rgba(c, 0.35);
+    ctx.lineWidth = 1.2;
+
+    for(let i=0;i<inserted;i++){
+      const ni = hnsw.nodes[i];
+      if(ni.level < l) continue;
+      for(const nb of ni.neighbors(l)){
+        if(nb <= i) continue; // 避免双画
+        const nj = hnsw.nodes[nb];
+        if(nj.level < l) continue;
+        const A = toXY(ni, l), B = toXY(nj, l);
+        ctx.beginPath();
+        ctx.moveTo(A.x, A.y);
+        ctx.lineTo(B.x, B.y);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // 可视化本次 insert 的 trace：高亮路径/扩展/新边
+  const trace = hnsw.trace;
+
+  if(trace && inserted>0){
+    // greedy path 高亮
+    for(const gp of trace.greedyPaths){
+      const l = gp.layer;
+      const c = COLORS[l % COLORS.length];
+      ctx.strokeStyle = rgba(c, 0.95);
+      ctx.lineWidth = 2.4;
+      ctx.setLineDash([6,4]);
+      for(let k=0;k<gp.path.length-1;k++){
+        const a = hnsw.nodes[gp.path[k]];
+        const b = hnsw.nodes[gp.path[k+1]];
+        const A = toXY(a, l), B = toXY(b, l);
+        ctx.beginPath();
+        ctx.moveTo(A.x, A.y);
+        ctx.lineTo(B.x, B.y);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+
+    // efSearch expansions：用更淡的线连“扩展出来的邻居”
+    for(const es of trace.efSearch){
+      const l = es.layer;
+      const c = COLORS[l % COLORS.length];
+      ctx.strokeStyle = rgba(c, 0.28);
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([2,4]);
+      for(const ex of es.expansions){
+        const from = hnsw.nodes[ex.from];
+        const F = toXY(from, l);
+        for(const nb of ex.explored){
+          const to = hnsw.nodes[nb];
+          const T = toXY(to, l);
+          ctx.beginPath();
+          ctx.moveTo(F.x, F.y);
+          ctx.lineTo(T.x, T.y);
+          ctx.stroke();
+        }
+      }
+      ctx.setLineDash([]);
+    }
+
+    // chosenNeighbors：新点到邻居的边高亮
+    for(const cn of trace.chosenNeighbors){
+      const l = cn.layer;
+      const c = COLORS[l % COLORS.length];
+      ctx.strokeStyle = rgba(c, 0.98);
+      ctx.lineWidth = 3.0;
+      const q = hnsw.nodes[trace.newNodeId];
+      const Q = toXY(q, l);
+      for(const nb of cn.neighbors){
+        const n = hnsw.nodes[nb];
+        const N = toXY(n, l);
+        ctx.beginPath();
+        ctx.moveTo(Q.x, Q.y);
+        ctx.lineTo(N.x, N.y);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // 点（每层画一次；未在该层的点可以画幽灵）
+  for(let l=maxL; l>=0; l--){
+    const c = COLORS[l % COLORS.length];
+
+    for(let i=0;i<inserted;i++){
+      const n = hnsw.nodes[i];
+      const P = toXY(n, l);
+      const inLayer = n.level >= l;
+
+      if(!inLayer && !showGhost) continue;
+
+      let r = inLayer ? 5 : 4;
+      let fillA = inLayer ? 0.55 : 0.08;
+      let strokeA = inLayer ? 0.75 : 0.12;
+
+      // 新插入点更醒目
+      if(trace && i === trace.newNodeId && inLayer){
+        r = 7;
+        ctx.fillStyle = "rgba(220, 40, 40, 0.85)";
+        ctx.strokeStyle = "rgba(220, 40, 40, 0.95)";
+      } else {
+        ctx.fillStyle = rgba(c, fillA);
+        ctx.strokeStyle = rgba(c, strokeA);
+      }
+
+      ctx.beginPath();
+      ctx.arc(P.x, P.y, r, 0, Math.PI*2);
+      ctx.fill();
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+
+      // id 标注（只标 layer 0，避免太乱）
+      if(l === 0 && inLayer){
+        ctx.fillStyle = "rgba(40,40,40,0.85)";
+        ctx.font = "11px ui-monospace, monospace";
+        ctx.fillText(String(n.id), P.x + 8, P.y - 6);
+      }
+    }
+  }
+
+  // HUD 信息
+  const entry = hnsw.entry;
+  const maxLevelText = hnsw.maxLevel;
+  const last = hnsw.trace;
+  const lastInfo = last ? `新点 #${last.newNodeId}  level=${last.newNodeLevel}` : "—";
+  hud.innerHTML = `
+    <div><b>状态</b></div>
+    <div>已插入：${inserted}/${allPts.length}</div>
+    <div>当前入口点 entry：${entry===null ? "—" : "#"+entry}</div>
+    <div>当前最高层：${maxLevelText}</div>
+    <div>本步：${lastInfo}</div>
+    <div style="opacity:.7;margin-top:6px">
+      线条含义：<br/>
+      <span style="opacity:.9">粗实线</span> = 新点连接的最终邻居边；<br/>
+      <span style="opacity:.85">粗虚线</span> = greedy 下降路径；<br/>
+      <span style="opacity:.75">细虚线</span> = efConstruction 扩展探索。
+    </div>
+  `;
+}
+
+(function init(){
+  reset();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

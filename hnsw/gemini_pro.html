@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HNSW 动态构建可视化 (2D Demo)</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            margin: 0;
+        }
+
+        h1 { margin-bottom: 10px; color: #333; }
+        .controls {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        button {
+            padding: 8px 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+
+        .status-panel {
+            font-family: monospace;
+            color: #555;
+            min-width: 300px;
+        }
+
+        /* 布局容器 */
+        .layers-container {
+            display: flex;
+            flex-direction: column; /* 垂直堆叠层级，模拟 HNSW 结构 */
+            gap: 20px;
+            perspective: 1000px;
+        }
+
+        .layer-wrapper {
+            position: relative;
+            background: white;
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-left: 5px solid #ccc;
+        }
+
+        .layer-label {
+            writing-mode: vertical-lr;
+            text-orientation: mixed;
+            font-weight: bold;
+            color: #666;
+            height: 300px;
+            text-align: center;
+            transform: rotate(180deg);
+        }
+
+        canvas {
+            border: 1px solid #eee;
+            background: #fafafa;
+            border-radius: 4px;
+        }
+
+        /* 针对不同层的边框颜色提示 */
+        .layer-2 { border-left-color: #e74c3c; } /* Top */
+        .layer-1 { border-left-color: #f39c12; } /* Mid */
+        .layer-0 { border-left-color: #2ecc71; } /* Base */
+
+    </style>
+</head>
+<body>
+
+    <h1>HNSW 动态生成过程可视化</h1>
+    
+    <div class="controls">
+        <button id="btnAdd" onclick="addNodeStep()">添加一个随机节点</button>
+        <button id="btnReset" onclick="resetGraph()">重置画布</button>
+        <div class="status-panel" id="status">准备就绪，点击"添加"开始...</div>
+    </div>
+
+    <div class="layers-container">
+        <div class="layer-wrapper layer-2">
+            <div class="layer-label">Layer 2 (稀疏/高速路)</div>
+            <canvas id="canvasL2" width="500" height="300"></canvas>
+        </div>
+        <div class="layer-wrapper layer-1">
+            <div class="layer-label">Layer 1 (过渡层)</div>
+            <canvas id="canvasL1" width="500" height="300"></canvas>
+        </div>
+        <div class="layer-wrapper layer-0">
+            <div class="layer-label">Layer 0 (全量数据/最底层)</div>
+            <canvas id="canvasL0" width="500" height="300"></canvas>
+        </div>
+    </div>
+
+<script>
+/**
+ * HNSW 2D Visualization Logic
+ * 简化版逻辑，为了视觉效果做了调整：
+ * 1. 使用欧几里得距离。
+ * 2. 只有3层 (0, 1, 2)。
+ * 3. 强调“最近邻查找”和“连接”的过程。
+ */
+
+// --- 配置参数 ---
+const WIDTH = 500;
+const HEIGHT = 300;
+const MAX_LAYERS = 3;
+const M = 3; // 每个节点每层最多连接数 (Neighbors)
+const M_MAX0 = 6; // 第0层最大连接数
+const EF_CONSTRUCTION = 10; // 搜索时的候选集大小
+const LEVEL_MULT = 1 / Math.log(M); //用于计算层级的常数
+
+// --- 数据结构 ---
+let nodes = []; // 存储所有节点对象 {id, x, y, level, neighbors: [[],[],[]]}
+let entryPointId = null; // 全局入口点 ID
+let isAnimating = false;
+
+// 画布上下文
+const ctxs = [
+    document.getElementById('canvasL0').getContext('2d'),
+    document.getElementById('canvasL1').getContext('2d'),
+    document.getElementById('canvasL2').getContext('2d')
+];
+
+// --- 辅助函数 ---
+function dist(n1, n2) {
+    return Math.sqrt((n1.x - n2.x)**2 + (n1.y - n2.y)**2);
+}
+
+function getRandomLevel() {
+    // 简化的层级生成，强制让高层稀疏
+    const r = Math.random();
+    if (r < 0.80) return 0; // 80% 概率在第0层
+    if (r < 0.95) return 1; // 15% 概率最高到第1层
+    return 2;             // 5% 概率最高到第2层
+}
+
+// 延时函数用于动画
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// --- 绘图系统 ---
+
+function clearCanvases() {
+    ctxs.forEach(ctx => ctx.clearRect(0, 0, WIDTH, HEIGHT));
+    // 画网格背景
+    ctxs.forEach(ctx => {
+        ctx.strokeStyle = '#eee';
+        ctx.beginPath();
+        for(let i=0; i<WIDTH; i+=50) { ctx.moveTo(i,0); ctx.lineTo(i,HEIGHT); }
+        for(let i=0; i<HEIGHT; i+=50) { ctx.moveTo(0,i); ctx.lineTo(WIDTH,i); }
+        ctx.stroke();
+    });
+}
+
+// 核心绘制函数
+function drawGraph(activeNode = null, highlightNodes = [], highlightEdges = []) {
+    clearCanvases();
+
+    // 遍历每一层
+    for (let l = 0; l < MAX_LAYERS; l++) {
+        const ctx = ctxs[l];
+        
+        // 1. 绘制已有的连接线 (Edges)
+        nodes.forEach(node => {
+            // 只有当节点在这个层级及以上时才绘制
+            if (node.level >= l) {
+                // 画它在这个层级的连接
+                if (node.neighbors[l]) {
+                    node.neighbors[l].forEach(targetId => {
+                        const target = nodes.find(n => n.id === targetId);
+                        if(target) {
+                            ctx.beginPath();
+                            ctx.moveTo(node.x, node.y);
+                            ctx.lineTo(target.x, target.y);
+                            ctx.strokeStyle = '#ccc'; // 默认淡灰色
+                            ctx.lineWidth = 1;
+                            ctx.stroke();
+                        }
+                    });
+                }
+            }
+        });
+
+        // 2. 绘制高亮边 (正在搜索或建立连接的边)
+        highlightEdges.forEach(edge => {
+            if (edge.layer === l) {
+                ctx.beginPath();
+                ctx.moveTo(edge.from.x, edge.from.y);
+                ctx.lineTo(edge.to.x, edge.to.y);
+                ctx.strokeStyle = edge.color || 'orange';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]); // 虚线表示搜索路径
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        });
+
+        // 3. 绘制节点
+        nodes.forEach(node => {
+            if (node.level >= l) {
+                const isHighlight = highlightNodes.includes(node.id);
+                const isEntryPoint = (node.id === entryPointId && l === nodes.find(n=>n.id===entryPointId).level);
+                
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, isHighlight ? 6 : 4, 0, Math.PI * 2);
+                
+                // 颜色逻辑
+                if (node === activeNode) {
+                    ctx.fillStyle = '#ff4757'; // 当前正在插入的新点（红色）
+                    // 绘制光晕
+                    ctx.shadowBlur = 10;
+                    ctx.shadowColor = "red";
+                } else if (isHighlight) {
+                    ctx.fillStyle = '#2ed573'; // 搜索路径上的点（绿色）
+                } else {
+                    // 普通点颜色随层级变化，方便区分
+                    if (l === 2) ctx.fillStyle = '#e74c3c';
+                    else if (l === 1) ctx.fillStyle = '#f39c12';
+                    else ctx.fillStyle = '#3498db'; 
+                    ctx.shadowBlur = 0;
+                }
+                
+                ctx.fill();
+                ctx.shadowBlur = 0; // reset
+
+                // 如果是入口点，画个圈标记
+                if (entryPointId === node.id) {
+                    ctx.strokeStyle = 'gold';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+            } else {
+                // 如果节点存在但当前层级看不到（虽然HNSW是向下包含的，但这里为了视觉清晰，
+                // 如果一个点最高Level是0，它不应该出现在Layer 1的视图中干扰视线）
+                // 逻辑：节点在 layer L 存在，当且仅当 node.level >= L
+            }
+        });
+        
+        // 如果当前插入点(activeNode) 还没有被加入nodes列表，或者是正在操作的点
+        if (activeNode && activeNode.level >= l) {
+             ctx.beginPath();
+             ctx.arc(activeNode.x, activeNode.y, 6, 0, Math.PI * 2);
+             ctx.fillStyle = '#ff4757';
+             ctx.fill();
+             // 标出 "New"
+             ctx.fillStyle = 'black';
+             ctx.font = '10px Arial';
+             ctx.fillText("New", activeNode.x + 8, activeNode.y);
+        }
+    }
+}
+
+// --- HNSW 核心逻辑 (带动画) ---
+
+function updateStatus(text) {
+    document.getElementById('status').innerText = text;
+}
+
+// 贪婪搜索：在指定层级找到最接近 query 的点
+async function searchLayer(queryNode, entryNode, layer) {
+    let curr = entryNode;
+    let closestDist = dist(queryNode, curr);
+    let changed = true;
+    
+    updateStatus(`层级 ${layer}: 从节点 ${curr.id} 开始贪婪搜索...`);
+    
+    while(changed) {
+        changed = false;
+        // 绘制当前状态：高亮 curr
+        drawGraph(queryNode, [curr.id]);
+        await sleep(300);
+
+        if (!curr.neighbors[layer]) break;
+
+        let candidates = curr.neighbors[layer].map(id => nodes.find(n => n.id === id));
+        
+        // 找出邻居中比当前点更近的点
+        let bestCandidate = null;
+        for(let cand of candidates) {
+            // 视觉演示：画出正在对比的线
+            drawGraph(queryNode, [curr.id, cand.id], [{from: curr, to: cand, layer: layer, color: '#aaa'}]);
+            await sleep(100);
+
+            let d = dist(queryNode, cand);
+            if (d < closestDist) {
+                closestDist = d;
+                bestCandidate = cand;
+            }
+        }
+
+        if (bestCandidate) {
+            curr = bestCandidate;
+            changed = true;
+            updateStatus(`层级 ${layer}: 移动到更近的节点 ${curr.id}`);
+        }
+    }
+    
+    updateStatus(`层级 ${layer}: 找到最近入口点 ${curr.id}`);
+    drawGraph(queryNode, [curr.id]); // 最终停留
+    await sleep(500);
+    return curr;
+}
+
+async function addNodeStep() {
+    if (isAnimating) return;
+    isAnimating = true;
+    document.getElementById('btnAdd').disabled = true;
+
+    // 1. 生成新节点
+    const newNode = {
+        id: nodes.length,
+        x: Math.random() * (WIDTH - 40) + 20,
+        y: Math.random() * (HEIGHT - 40) + 20,
+        level: getRandomLevel(),
+        neighbors: [[], [], []] // layers 0, 1, 2
+    };
+
+    updateStatus(`生成新节点 (Max Level: ${newNode.level})`);
+    drawGraph(newNode);
+    await sleep(800);
+
+    // 2. 如果是第一个点
+    if (nodes.length === 0) {
+        nodes.push(newNode);
+        entryPointId = newNode.id;
+        updateStatus("这是第一个节点，设为全局入口。");
+        drawGraph();
+        isAnimating = false;
+        document.getElementById('btnAdd').disabled = false;
+        return;
+    }
+
+    // 3. HNSW 插入过程
+    let currObj = nodes.find(n => n.id === entryPointId);
+    let currLevel = nodes.find(n => n.id === entryPointId).level; // 入口点的最高层级
+    
+    // Phase 1: 从顶层降落到 newNode.level + 1，只做贪婪搜索，不连接
+    // 注意：我们要从整个图的最高层开始，不仅是 entryPoint 的层，但在 demo 中通常 entryPoint 就在最高层
+    let maxGraphLevel = 2; // 简化，假设总是从 Level 2 检查下来
+    
+    for (let l = maxGraphLevel; l > newNode.level; l--) {
+        // 如果当前层没有任何节点（或者入口点都不在这一层），直接跳过
+        if (currObj.level < l) continue;
+
+        updateStatus(`Phase 1: 在层级 ${l} 寻找下沉入口...`);
+        currObj = await searchLayer(newNode, currObj, l);
+    }
+
+    // Phase 2: 从 newNode.level 向下到 0，不仅搜索，还要建立连接
+    for (let l = Math.min(newNode.level, maxGraphLevel); l >= 0; l--) {
+        updateStatus(`Phase 2: 在层级 ${l} 插入节点并连接邻居...`);
+        
+        // 在这一层找到最近的 K 个邻居 (这里简化为找到最近的一个作为入口，然后基于它选 M 个)
+        // 真实的 HNSW 这里会使用 efConstruction 维护一个优先队列
+        // 为了可视化简化：我们先通过贪婪搜索找到最近点，然后把最近点及其邻居作为候选集
+        
+        let nearestInLayer = await searchLayer(newNode, currObj, l); // 找到最近点
+        
+        // 收集候选人：最近点 + 最近点的邻居 (模拟 heuristic)
+        let candidates = [nearestInLayer];
+        if (nearestInLayer.neighbors[l]) {
+            nearestInLayer.neighbors[l].forEach(nid => {
+                candidates.push(nodes.find(n => n.id === nid));
+            });
+        }
+        
+        // 按距离排序
+        candidates.sort((a, b) => dist(newNode, a) - dist(newNode, b));
+        // 选前 M 个连接
+        let limit = (l === 0) ? M_MAX0 : M;
+        let selected = candidates.slice(0, limit);
+
+        // 此时，我们要正式把 newNode 加入数据结构了 (在循环第一层时加入，避免重复)
+        if (!nodes.includes(newNode)) {
+            nodes.push(newNode);
+        }
+
+        // 建立双向连接
+        for (let neighbor of selected) {
+            // 连接 New -> Neighbor
+            newNode.neighbors[l].push(neighbor.id);
+            // 连接 Neighbor -> New
+            neighbor.neighbors[l].push(newNode.id);
+            
+            // 视觉：画出新连线 (红色)
+            drawGraph(null, [], [{from: newNode, to: neighbor, layer: l, color: '#ff4757'}]);
+            await sleep(200);
+        }
+
+        // 更新 entry point 为当前层找到的最近点，用于下一层搜索的起点
+        currObj = nearestInLayer;
+    }
+
+    // 更新全局入口点：如果新节点层级比当前入口点高，它可能成为新入口
+    let currentEntryNode = nodes.find(n => n.id === entryPointId);
+    if (newNode.level > currentEntryNode.level) {
+        entryPointId = newNode.id;
+        updateStatus("更新全局入口点 (新节点更高)");
+    }
+
+    updateStatus("节点插入完成。");
+    drawGraph();
+    isAnimating = false;
+    document.getElementById('btnAdd').disabled = false;
+}
+
+function resetGraph() {
+    if(isAnimating) return;
+    nodes = [];
+    entryPointId = null;
+    clearCanvases();
+    updateStatus("画布已重置");
+}
+
+// 初始化背景
+clearCanvases();
+
+</script>
+</body>
+</html>
