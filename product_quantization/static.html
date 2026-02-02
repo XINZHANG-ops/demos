@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8"/>
+<title>PQ vs OPQ（左右对照：PQ 选错，OPQ 选对）</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:16px;color:#111;}
+  .row{display:flex;gap:16px;flex-wrap:wrap;}
+  .panel{border:1px solid #ccc;border-radius:12px;padding:10px;}
+  canvas{border:1px solid #ccc;border-radius:12px;background:#fff;}
+  .small{font-size:13px;color:#555;line-height:1.5;margin-top:8px;}
+  .legend{margin-top:10px;display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;}
+  .sw{width:16px;height:16px;border-radius:50%;border:3px solid;}
+  .sq{width:16px;height:16px;border-radius:3px;border:3px dashed;}
+  .x{font-weight:900;font-size:18px;color:#d11;line-height:1;}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;}
+  .title{display:flex;justify-content:space-between;align-items:baseline;margin:0 0 6px 0;}
+</style>
+</head>
+<body>
+
+<h2 style="margin:0 0 6px 0;">PQ vs OPQ（左右对照）：同一批数据，PQ 选错邻居，OPQ 选对邻居</h2>
+<div class="small">
+黑色大圆是 <b>Query q</b>。蓝色是 <b>真实最近邻</b>，橙色是 <b>近似距离选出来的邻居</b>。红色 × 是 <b>量化网格中心</b>。  
+左边 PQ：网格轴对齐 → 容易选错。右边 OPQ：先旋转再切 → 网格对齐数据主方向 → 更接近真实。
+</div>
+
+<div class="row" style="margin-top:12px;">
+  <div class="panel">
+    <div class="title">
+      <b>左：PQ（分轴量化，可能选错）</b>
+      <span class="mono" id="infoL"></span>
+    </div>
+    <canvas id="cvL" width="720" height="720"></canvas>
+  </div>
+
+  <div class="panel">
+    <div class="title">
+      <b>右：OPQ（旋转后 PQ，通常选对）</b>
+      <span class="mono" id="infoR"></span>
+    </div>
+    <canvas id="cvR" width="720" height="720"></canvas>
+  </div>
+</div>
+
+<div class="legend small">
+  <div class="sw" style="border-color:#000"></div><div><b>Query q</b>（黑色超大空心圆）</div>
+  <div class="sq" style="border-color:#000"></div><div><b>q_hat</b>（q 对齐到的中心，仅用于直觉）</div>
+  <div class="sw" style="border-color:#1a73e8"></div><div><b>TRUE 最近邻</b>（真实欧氏距离最近）</div>
+  <div class="sw" style="border-color:#f57c00"></div><div><b>近似距离选中邻居</b>（PQ/OPQ 的 ADC 最近）</div>
+  <div class="x">×</div><div><b>网格中心</b>（PQ：轴对齐；OPQ：旋转后网格）</div>
+</div>
+
+<div class="small mono" id="summary" style="margin-top:10px;"></div>
+
+<script>
+/* =========================================================
+   Data (same as your "perfect" non-overlap setup)
+   ========================================================= */
+const q  = {x:0.48, y:0.76};
+const A  = {id:0, x:0.52, y:0.79, tag:"A"}; // TRUE NN
+const B  = {id:1, x:0.12, y:0.88, tag:"B"}; // PQ tends to pick
+const others = [
+  {x:0.18,y:0.20},{x:0.85,y:0.15},{x:0.92,y:0.92},
+  {x:0.15,y:0.65},{x:0.35,y:0.95},{x:0.75,y:0.55},
+  {x:0.05,y:0.40},{x:0.60,y:0.10},{x:0.95,y:0.35},
+];
+const DB = [A, B, ...others.map((p,i)=>({id:2+i, ...p, tag:""}))];
+
+/* =========================================================
+   Math helpers
+   ========================================================= */
+function d2(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return dx*dx+dy*dy; }
+function add(a,b){ return {x:a.x+b.x, y:a.y+b.y}; }
+function sub(a,b){ return {x:a.x-b.x, y:a.y-b.y}; }
+function rot(p, c, ang){
+  const v=sub(p,c);
+  const cs=Math.cos(ang), sn=Math.sin(ang);
+  return add(c, {x: v.x*cs - v.y*sn, y: v.x*sn + v.y*cs});
+}
+
+/* =========================================================
+   Drawer with: arcs + (optional) auto label placement
+   ========================================================= */
+function makeDrawer(canvas){
+  const cv = canvas;
+  const ctx = cv.getContext("2d");
+  const pad = 0.10;
+  const min=-0.08, max=1.08;
+
+  function W(p){
+    return {
+      x: pad*cv.width + p.x*(cv.width*(1-2*pad)),
+      y: pad*cv.height + (1-p.y)*(cv.height*(1-2*pad)),
+    };
+  }
+
+  function clear(){ ctx.clearRect(0,0,cv.width,cv.height); }
+
+  function gridBg(){
+    ctx.save();
+    ctx.globalAlpha=0.25;
+    ctx.strokeStyle="#e8e8e8";
+    ctx.lineWidth=1;
+    for(let i=0;i<=10;i++){
+      const t=i/10;
+      const x=pad*cv.width + t*(cv.width*(1-2*pad));
+      const y=pad*cv.height + t*(cv.height*(1-2*pad));
+      ctx.beginPath(); ctx.moveTo(x,pad*cv.height); ctx.lineTo(x,cv.height*(1-pad)); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(pad*cv.width,y); ctx.lineTo(cv.width*(1-pad),y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawX(p){
+    const c=W(p);
+    ctx.save();
+    ctx.strokeStyle="#d11";
+    ctx.lineWidth=4;
+    ctx.beginPath();
+    ctx.moveTo(c.x-12,c.y-12); ctx.lineTo(c.x+12,c.y+12);
+    ctx.moveTo(c.x-12,c.y+12); ctx.lineTo(c.x+12,c.y-12);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function fillDot(p,r,color,alpha=1){
+    const c=W(p);
+    ctx.save();
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle=color;
+    ctx.beginPath(); ctx.arc(c.x,c.y,r,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+
+  function circle(p,r,stroke,w=5,glow=false){
+    const c=W(p);
+    ctx.save();
+    if(glow){
+      ctx.shadowColor = "rgba(0,0,0,0.25)";
+      ctx.shadowBlur = 18;
+    }
+    ctx.lineWidth=w;
+    ctx.strokeStyle=stroke;
+    ctx.beginPath(); ctx.arc(c.x,c.y,r,0,Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
+
+  function squareDashed(p,r,stroke,w=4){
+    const c=W(p);
+    ctx.save();
+    ctx.lineWidth=w;
+    ctx.strokeStyle=stroke;
+    ctx.setLineDash([8,6]);
+    ctx.strokeRect(c.x-r,c.y-r,2*r,2*r);
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  function curvedLine(a,b,color,w=4,alpha=0.85,bend=0.18,dash=null){
+    const A=W(a), B=W(b);
+    const mx=(A.x+B.x)/2, my=(A.y+B.y)/2;
+    const dx=B.x-A.x, dy=B.y-A.y;
+    const len=Math.hypot(dx,dy)+1e-9;
+    const nx=-dy/len, ny=dx/len;
+    const cxp = mx + nx * bend * 260;
+    const cyp = my + ny * bend * 260;
+
+    ctx.save();
+    ctx.globalAlpha=alpha;
+    ctx.strokeStyle=color;
+    ctx.lineWidth=w;
+    if(dash) ctx.setLineDash(dash);
+    ctx.beginPath();
+    ctx.moveTo(A.x,A.y);
+    ctx.quadraticCurveTo(cxp,cyp,B.x,B.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // --- Auto label placement to avoid overlaps (used on right panel) ---
+  function measureLabel(text){
+    ctx.save();
+    ctx.font="15px ui-monospace, Menlo, Consolas, monospace";
+    const w = ctx.measureText(text).width;
+    const h = 16; // approximate line height
+    ctx.restore();
+    return {w, h};
+  }
+  function rectsOverlap(a,b){
+    return !(a.x+a.w < b.x || b.x+b.w < a.x || a.y+a.h < b.y || b.y+b.h < a.y);
+  }
+  function placeLabel(point, text, color, placedRects){
+    const c=W(point);
+    const m=measureLabel(text);
+
+    // candidate offsets (dx,dy), step outward
+    const dirs = [
+      [ 12,-12], [ 12, 18], [-m.w-12,-12], [-m.w-12,18],
+      [ 12,-34], [ 12, 40], [-m.w-12,-34], [-m.w-12,40],
+      [ 40,-12], [ 40, 18], [-m.w-40,-12], [-m.w-40,18],
+    ];
+    let best = null;
+
+    for(const [dx,dy] of dirs){
+      const r = {x: c.x+dx, y: c.y+dy-m.h, w: m.w, h: m.h};
+      // keep inside canvas
+      if(r.x < 2 || r.y < 2 || r.x+r.w > cv.width-2 || r.y+r.h > cv.height-2) continue;
+
+      let ok = true;
+      for(const pr of placedRects){
+        if(rectsOverlap(r, pr)){ ok=false; break; }
+      }
+      if(ok){ best = r; break; }
+    }
+
+    // fallback: just place default
+    if(!best){
+      best = {x: c.x+12, y: c.y-12-m.h, w: m.w, h: m.h};
+    }
+
+    // draw text with white background box to boost readability
+    ctx.save();
+    ctx.font="15px ui-monospace, Menlo, Consolas, monospace";
+    ctx.fillStyle="rgba(255,255,255,0.85)";
+    ctx.fillRect(best.x-3, best.y-2, best.w+6, best.h+6);
+    ctx.fillStyle=color;
+    ctx.fillText(text, best.x, best.y+best.h+1);
+    ctx.restore();
+
+    placedRects.push(best);
+  }
+
+  // simple label (left panel uses fixed offsets)
+  function label(p,txt,dx=10,dy=-10,color="#000"){
+    const c=W(p);
+    ctx.save();
+    ctx.font="15px ui-monospace, Menlo, Consolas, monospace";
+    // white backing for readability
+    const w = ctx.measureText(txt).width, h = 16;
+    ctx.fillStyle="rgba(255,255,255,0.85)";
+    ctx.fillRect(c.x+dx-3, c.y+dy-h-2, w+6, h+6);
+    ctx.fillStyle=color;
+    ctx.fillText(txt, c.x+dx, c.y+dy);
+    ctx.restore();
+  }
+
+  return {cv,ctx,W,clear,gridBg,drawX,fillDot,circle,squareDashed,curvedLine,label,placeLabel};
+}
+
+/* =========================================================
+   PQ (left)
+   ========================================================= */
+const cxPQ=[0,1], cyPQ=[0,1];
+function encodePQ(p){
+  const ix = (Math.abs(p.x-0)<=Math.abs(p.x-1)) ? 0 : 1;
+  const iy = (Math.abs(p.y-0)<=Math.abs(p.y-1)) ? 0 : 1;
+  return {ix,iy};
+}
+function reconPQ(code){ return {x:cxPQ[code.ix], y:cyPQ[code.iy]}; }
+function adcPQ(q, code){
+  const Dx=(q.x - cxPQ[code.ix])**2;
+  const Dy=(q.y - cyPQ[code.iy])**2;
+  return Dx+Dy;
+}
+
+/* =========================================================
+   OPQ (right): PCA rotation + 1D kmeans (k=2)
+   ========================================================= */
+function pcaAngle(points){
+  let mx=0,my=0;
+  for(const p of points){ mx+=p.x; my+=p.y; }
+  mx/=points.length; my/=points.length;
+  let sxx=0, syy=0, sxy=0;
+  for(const p of points){
+    const dx=p.x-mx, dy=p.y-my;
+    sxx += dx*dx; syy += dy*dy; sxy += dx*dy;
+  }
+  sxx/=points.length; syy/=points.length; sxy/=points.length;
+  return 0.5 * Math.atan2(2*sxy, (sxx - syy));
+}
+function kmeans1D(values, k=2, iters=25){
+  let minv=Math.min(...values), maxv=Math.max(...values);
+  let centers=[minv,maxv];
+  for(let t=0;t<iters;t++){
+    const groups=[[],[]];
+    for(const v of values){
+      const d0=(v-centers[0])**2, d1=(v-centers[1])**2;
+      groups[d0<=d1?0:1].push(v);
+    }
+    for(let i=0;i<k;i++){
+      if(groups[i].length) centers[i]=groups[i].reduce((a,b)=>a+b,0)/groups[i].length;
+    }
+    centers.sort((a,b)=>a-b);
+  }
+  return centers;
+}
+function encodeOPQ_inRot(p, cxR, cyR){
+  const ix = (Math.abs(p.x-cxR[0]) <= Math.abs(p.x-cxR[1])) ? 0 : 1;
+  const iy = (Math.abs(p.y-cyR[0]) <= Math.abs(p.y-cyR[1])) ? 0 : 1;
+  return {ix,iy};
+}
+function adcOPQ(qr, code, cxR, cyR){
+  const Dx=(qr.x - cxR[code.ix])**2;
+  const Dy=(qr.y - cyR[code.iy])**2;
+  return Dx+Dy;
+}
+function reconOPQ_rot(code, cxR, cyR){
+  return {x:cxR[code.ix], y:cyR[code.iy]};
+}
+
+/* =========================================================
+   Compute neighbors
+   ========================================================= */
+const trueNN = DB.reduce((best,p)=> d2(q,p) < d2(q,best) ? p : best, DB[0]);
+
+for(const p of DB){
+  p.codePQ = encodePQ(p);
+  p.reconPQ = reconPQ(p.codePQ);
+  p.adcPQ = adcPQ(q, p.codePQ);
+  p.true = Math.sqrt(d2(q,p));
+}
+const pqPick = DB.reduce((best,p)=> p.adcPQ < best.adcPQ ? p : best, DB[0]);
+
+// OPQ
+const mu = {x: DB.reduce((s,p)=>s+p.x,0)/DB.length, y: DB.reduce((s,p)=>s+p.y,0)/DB.length};
+const theta = pcaAngle(DB);
+const ang = -theta;
+
+const DBR = DB.map(p=>({ ...p, r: rot(p, mu, ang) }));
+const qR  = rot(q, mu, ang);
+
+const cxR = kmeans1D(DBR.map(o=>o.r.x), 2, 25);
+const cyR = kmeans1D(DBR.map(o=>o.r.y), 2, 25);
+
+for(const o of DBR){
+  o.codeOPQ = encodeOPQ_inRot(o.r, cxR, cyR);
+  o.adcOPQ = adcOPQ(qR, o.codeOPQ, cxR, cyR);
+  o.reconR = reconOPQ_rot(o.codeOPQ, cxR, cyR);
+  o.reconOPQ = rot(o.reconR, mu, -ang);
+}
+const opqPickR = DBR.reduce((best,o)=> o.adcOPQ < best.adcOPQ ? o : best, DBR[0]);
+const opqPick = DB.find(p=>p.id===opqPickR.id);
+
+// q_hat for both
+const qHatPQ = reconPQ(encodePQ(q));
+const qCodeR = encodeOPQ_inRot(qR, cxR, cyR);
+const qHatR  = reconOPQ_rot(qCodeR, cxR, cyR);
+const qHatOPQ = rot(qHatR, mu, -ang);
+
+// grid centers
+const pqGrid = [{x:0,y:0},{x:0,y:1},{x:1,y:0},{x:1,y:1}];
+const opqGrid = [];
+for(const x of cxR) for(const y of cyR) opqGrid.push(rot({x,y}, mu, -ang));
+
+/* =========================================================
+   Render
+   ========================================================= */
+const L = makeDrawer(document.getElementById("cvL"));
+const R = makeDrawer(document.getElementById("cvR"));
+
+function drawPQ(){
+  L.clear(); L.gridBg();
+
+  // background
+  for(const p of others) L.fillDot(p, 4, "#bdbdbd", 0.95);
+
+  // grid
+  pqGrid.forEach(L.drawX);
+
+  // q->qhat
+  L.curvedLine(q, qHatPQ, "#000", 3, 0.55, -0.22, [8,6]);
+
+  // snap only for trueNN and pqPick
+  L.curvedLine(trueNN, trueNN.reconPQ, "#1a73e8", 3, 0.75, +0.20);
+  L.curvedLine(pqPick, pqPick.reconPQ, "#f57c00", 3, 0.75, -0.18);
+
+  // q->neighbors
+  L.curvedLine(q, trueNN, "#1a73e8", 5, 0.75, +0.10);
+  L.curvedLine(q, pqPick, "#f57c00", 5, 0.75, -0.12);
+
+  // highlights
+  L.fillDot(trueNN, 6, "#1a73e8", 1);
+  L.circle(trueNN, 16, "#1a73e8", 5);
+  L.label(trueNN, `TRUE NN (#${trueNN.id})`, 12, -12, "#1a73e8");
+
+  L.fillDot(pqPick, 6, "#f57c00", 1);
+  L.circle(pqPick, 16, "#f57c00", 5);
+  L.label(pqPick, `PQ pick (#${pqPick.id})`, 12, -12, "#f57c00");
+
+  // q_hat + q
+  L.squareDashed(qHatPQ, 14, "#000", 4);
+  L.label(qHatPQ, "q_hat", 12, -12, "#000");
+
+  L.circle(q, 22, "#000", 6, true);
+  L.fillDot(q, 3.2, "#000", 1);
+  L.label(q, "q", 12, -12, "#000");
+}
+
+function drawOPQ(){
+  R.clear(); R.gridBg();
+
+  // background
+  for(const p of others) R.fillDot(p, 4, "#bdbdbd", 0.95);
+
+  // rotated grid
+  opqGrid.forEach(R.drawX);
+
+  // q->qhat
+  R.curvedLine(q, qHatOPQ, "#000", 3, 0.55, -0.22, [8,6]);
+
+  // snap only for trueNN and opqPick
+  const trueNNR = DBR.find(o=>o.id===trueNN.id);
+  const opqPickRR = DBR.find(o=>o.id===opqPick.id);
+
+  R.curvedLine(trueNN, trueNNR.reconOPQ, "#1a73e8", 3, 0.75, +0.20);
+  R.curvedLine(opqPick, opqPickRR.reconOPQ, "#f57c00", 3, 0.75, -0.18);
+
+  // q->neighbors
+  R.curvedLine(q, trueNN, "#1a73e8", 5, 0.75, +0.10);
+  R.curvedLine(q, opqPick, "#f57c00", 5, 0.75, -0.12);
+
+  // highlights
+  R.fillDot(trueNN, 6, "#1a73e8", 1);
+  R.circle(trueNN, 16, "#1a73e8", 5);
+
+  R.fillDot(opqPick, 6, "#f57c00", 1);
+  R.circle(opqPick, 16, "#f57c00", 5);
+
+  // q_hat + q
+  R.squareDashed(qHatOPQ, 14, "#000", 4);
+  R.circle(q, 22, "#000", 6, true);
+  R.fillDot(q, 3.2, "#000", 1);
+
+  // --- AUTO label placement (no overlaps) ---
+  const placed = [];
+  R.placeLabel(q, "q", "#000", placed);
+  R.placeLabel(qHatOPQ, "q_hat", "#000", placed);
+  R.placeLabel(trueNN, `TRUE NN (#${trueNN.id})`, "#1a73e8", placed);
+  R.placeLabel(opqPick, `OPQ pick (#${opqPick.id})`, "#f57c00", placed);
+}
+
+drawPQ();
+drawOPQ();
+
+/* =========================================================
+   Info
+   ========================================================= */
+function f3(x){ return x.toFixed(3); }
+document.getElementById("infoL").textContent =
+  `trueNN=#${trueNN.id}  PQpick=#${pqPick.id}`;
+document.getElementById("infoR").textContent =
+  `trueNN=#${trueNN.id}  OPQpick=#${opqPick.id}`;
+
+const sum =
+`q=(${q.x.toFixed(2)},${q.y.toFixed(2)})
+TRUE NN: #${trueNN.id}  dist=${f3(Math.sqrt(d2(q,trueNN)))}
+
+PQ:
+  pick #${pqPick.id}  trueDist=${f3(Math.sqrt(d2(q,pqPick)))}  ADC=${f3(Math.sqrt(pqPick.adcPQ))}
+  TRUE #${trueNN.id}  trueDist=${f3(Math.sqrt(d2(q,trueNN)))}  ADC=${f3(Math.sqrt(trueNN.adcPQ))}
+
+OPQ (PCA angle ≈ ${(theta*180/Math.PI).toFixed(1)}°, applied ≈ ${(-theta*180/Math.PI).toFixed(1)}°):
+  pick #${opqPick.id} trueDist=${f3(Math.sqrt(d2(q,opqPick)))}  ADC=${f3(Math.sqrt(opqPickR.adcOPQ))}
+  TRUE #${trueNN.id} trueDist=${f3(Math.sqrt(d2(q,trueNN)))}  ADC=${f3(Math.sqrt(DBR.find(o=>o.id===trueNN.id).adcOPQ))}
+`;
+document.getElementById("summary").textContent = sum;
+</script>
+
+</body>
+</html>

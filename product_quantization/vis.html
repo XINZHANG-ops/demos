@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PQ 距离计算流程可视化</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #1e1e2e; /* 深色背景，符合极客审美 */
+            color: #cdd6f4;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+
+        h2 {
+            margin-bottom: 30px;
+            color: #89b4fa;
+            font-weight: 300;
+        }
+
+        .container {
+            position: relative;
+            width: 800px;
+            background: #25273e;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        /* --- Section 1: Encoded Vector Y --- */
+        .section-label {
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #6c7086;
+            margin-bottom: 10px;
+            display: block;
+        }
+
+        .vector-container {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 40px;
+        }
+
+        .code-box {
+            width: 80px;
+            height: 60px;
+            border: 2px solid #45475a;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #313244;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .code-box.active {
+            border-color: #f9e2af;
+            background: #45475a;
+            transform: scale(1.1);
+            box-shadow: 0 0 15px rgba(249, 226, 175, 0.3);
+        }
+
+        .code-val {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #f9e2af;
+        }
+        .code-idx {
+            font-size: 0.7em;
+            color: #9399b2;
+            margin-top: 4px;
+        }
+
+        /* --- Section 2: Distance Table --- */
+        .table-container {
+            position: relative;
+            margin-bottom: 40px;
+        }
+
+        .table-row {
+            display: flex;
+            align-items: center;
+            height: 40px;
+            margin-bottom: 8px;
+            background: linear-gradient(90deg, #313244 0%, #45475a 100%);
+            border-radius: 4px;
+            position: relative;
+            opacity: 0.5;
+            transition: opacity 0.3s;
+        }
+
+        .table-row.active {
+            opacity: 1;
+            box-shadow: 0 0 10px rgba(137, 180, 250, 0.2);
+        }
+
+        .row-label {
+            width: 100px;
+            padding-left: 15px;
+            font-size: 0.8em;
+            color: #bac2de;
+            border-right: 1px solid #585b70;
+        }
+
+        /* The visual bar representing 0-255 entries */
+        .data-strip {
+            flex-grow: 1;
+            position: relative;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        /* The scanner cursor */
+        .cursor {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background-color: #a6e3a1; /* Green highlight */
+            transform: translateX(0);
+            transition: left 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+            box-shadow: 0 0 8px #a6e3a1;
+            opacity: 0;
+        }
+
+        .extracted-value {
+            position: absolute;
+            top: -30px;
+            left: 0; 
+            background: #a6e3a1;
+            color: #1e1e2e;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: bold;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        /* --- Section 3: Summation --- */
+        .sum-container {
+            text-align: right;
+            border-top: 1px solid #585b70;
+            padding-top: 20px;
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .formula {
+            color: #6c7086;
+            font-family: monospace;
+            font-size: 1.1em;
+        }
+
+        .total-display {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #89b4fa;
+            min-width: 150px;
+            text-align: right;
+        }
+
+        .btn {
+            margin-top: 20px;
+            padding: 10px 24px;
+            background: #89b4fa;
+            color: #1e1e2e;
+            border: none;
+            border-radius: 6px;
+            font-size: 1em;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #b4befe; }
+        .btn:disabled { background: #585b70; cursor: not-allowed; }
+
+        /* Floating Animation Elements */
+        .floater {
+            position: absolute;
+            color: #a6e3a1;
+            font-weight: bold;
+            font-size: 1.2em;
+            pointer-events: none;
+            z-index: 100;
+        }
+
+    </style>
+</head>
+<body>
+
+    <h2>Product Quantization (PQ) 查询过程演示</h2>
+
+    <div class="container">
+        
+        <span class="section-label">1. 获取数据库向量 Y 的压缩编码 (8 Bytes)</span>
+        <div class="vector-container" id="vectorContainer">
+            </div>
+
+        <span class="section-label">2. 查表：Query Subspace Distance Table (8x256)</span>
+        <div class="table-container" id="tableContainer">
+            </div>
+
+        <div class="sum-container">
+            <div class="formula" id="formulaDisplay">Distance = 0</div>
+            <div class="total-display" id="totalDisplay">0.0</div>
+        </div>
+
+    </div>
+
+    <button class="btn" id="startBtn" onclick="runSimulation()">开始查询 (Compute)</button>
+
+    <script>
+        // --- Configuration Data (Based on your story) ---
+        const M = 8;
+        const codes = [23, 48, 205, 7, 132, 89, 14, 221];
+        const distances = [1.3, 2.2, 0.9, 1.8, 2.6, 1.1, 1.5, 2.0];
+        
+        // --- DOM Elements ---
+        const vectorContainer = document.getElementById('vectorContainer');
+        const tableContainer = document.getElementById('tableContainer');
+        const totalDisplay = document.getElementById('totalDisplay');
+        const formulaDisplay = document.getElementById('formulaDisplay');
+        const startBtn = document.getElementById('startBtn');
+
+        let currentSum = 0;
+
+        // --- Initialization ---
+        function init() {
+            // Render Encoded Vector Boxes
+            vectorContainer.innerHTML = '';
+            codes.forEach((code, idx) => {
+                const box = document.createElement('div');
+                box.className = 'code-box';
+                box.id = `code-box-${idx}`;
+                box.innerHTML = `
+                    <span class="code-val">${code}</span>
+                    <span class="code-idx">Sub ${idx+1}</span>
+                `;
+                vectorContainer.appendChild(box);
+            });
+
+            // Render Table Rows
+            tableContainer.innerHTML = '';
+            for (let i = 0; i < M; i++) {
+                const row = document.createElement('div');
+                row.className = 'table-row';
+                row.id = `table-row-${i}`;
+                
+                // Scale position: code 0 is left (0%), code 255 is right (100%)
+                const positionPercent = (codes[i] / 255) * 100;
+                
+                row.innerHTML = `
+                    <div class="row-label">Subspace ${i+1}</div>
+                    <div class="data-strip">
+                        <div class="cursor" id="cursor-${i}" style="left: ${positionPercent}%">
+                            <div class="extracted-value">${distances[i].toFixed(1)}</div>
+                        </div>
+                    </div>
+                `;
+                tableContainer.appendChild(row);
+            }
+        }
+
+        // --- Animation Logic ---
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function runSimulation() {
+            startBtn.disabled = true;
+            startBtn.innerText = "计算中...";
+            currentSum = 0;
+            totalDisplay.innerText = "0.0";
+            formulaDisplay.innerText = "Distance = 0";
+            
+            // Reset Styles
+            document.querySelectorAll('.code-box').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.table-row').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.cursor').forEach(el => el.style.opacity = '0');
+
+            // Iterate through each subspace
+            for (let i = 0; i < M; i++) {
+                // 1. Highlight the Encoded Vector Block
+                const codeBox = document.getElementById(`code-box-${i}`);
+                codeBox.classList.add('active');
+
+                // 2. Highlight the Table Row
+                const tableRow = document.getElementById(`table-row-${i}`);
+                tableRow.classList.add('active');
+
+                await sleep(400);
+
+                // 3. Move Cursor to position and Show Value (The Lookup)
+                const cursor = document.getElementById(`cursor-${i}`);
+                const valueTip = cursor.querySelector('.extracted-value');
+                cursor.style.opacity = '1';
+                valueTip.style.opacity = '1';
+
+                // 4. Update Math Logic (Summation)
+                let prevSum = currentSum;
+                currentSum += distances[i];
+                
+                // Visual update of formula
+                const distStr = distances[i].toFixed(1);
+                if (i === 0) {
+                    formulaDisplay.innerText = `Distance = ${distStr}`;
+                } else {
+                    formulaDisplay.innerText += ` + ${distStr}`;
+                }
+
+                // 5. Update Total Display with a small "count up" effect
+                totalDisplay.innerText = currentSum.toFixed(1);
+
+                await sleep(600); // Wait for viewer to absorb
+
+                // Cleanup previous step visually (optional, keep highlighted to show progress)
+                // codeBox.classList.remove('active');
+                // tableRow.classList.remove('active'); 
+            }
+
+            startBtn.innerText = "重新演示";
+            startBtn.disabled = false;
+        }
+
+        // Run init on load
+        init();
+
+    </script>
+</body>
+</html>

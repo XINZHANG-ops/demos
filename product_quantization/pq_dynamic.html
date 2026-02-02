@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>PQ vs OPQ: k-means 收敛 + 邻居对比（2D 可视化）</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial; margin: 16px; color:#111; }
+    .row { display:flex; gap:16px; flex-wrap: wrap; }
+    .panel { border:1px solid #ddd; border-radius:12px; padding:12px; }
+    canvas { border:1px solid #ddd; border-radius:10px; background:#fff; }
+    .controls { display:flex; flex-wrap:wrap; gap:10px; align-items: end; }
+    label { font-size: 12px; color:#333; display:flex; flex-direction: column; gap:4px;}
+    input[type="number"], input[type="text"] { width: 120px; padding:6px 8px; border:1px solid #ccc; border-radius:8px; }
+    input[type="range"] { width: 180px; }
+    button { padding:8px 12px; border-radius:10px; border:1px solid #ccc; background:#f6f6f6; cursor:pointer; }
+    button:hover { background:#eee; }
+    .small { font-size: 12px; color:#555; line-height: 1.45; }
+    .lists { display:flex; gap:16px; flex-wrap: wrap; }
+    .listbox { min-width: 320px; }
+    ol { margin: 6px 0 0 18px; padding: 0; }
+    .badge { display:inline-block; padding:2px 8px; border-radius: 999px; font-size: 12px; border:1px solid #ccc; }
+    .b-true { background:#eef7ff; border-color:#9cc8ff; }
+    .b-pq   { background:#fff3e8; border-color:#ffc08a; }
+    .b-opq  { background:#effff0; border-color:#9ee6a6; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+  </style>
+</head>
+<body>
+  <h2 style="margin:0 0 8px 0;">PQ vs OPQ（2D）：k-means 收敛过程 + 手动查询邻居对比</h2>
+  <div class="small">
+    左图：<b>2D k-means</b>（中心能沿斜线贴合数据）。右图：<b>PQ-like</b>（分别对 x/y 做 1D k-means，中心形成网格，容易偏离斜线）。
+    <br/>下方输入查询点 <span class="mono">(qx, qy)</span> 后，会显示 <span class="badge b-true">True</span>、<span class="badge b-pq">PQ</span>、<span class="badge b-opq">OPQ</span> 三种 Top-N 邻居，并在图中高亮。
+  </div>
+
+  <div class="panel" style="margin-top:12px;">
+    <div class="controls">
+      <label>数据点数 N
+        <input id="nPts" type="number" value="1200" min="200" max="6000" step="100"/>
+      </label>
+      <label>噪声（越小越“强相关”）
+        <input id="noise" type="number" value="0.12" min="0.02" max="0.60" step="0.01"/>
+      </label>
+      <label>中心总数 K（2D k-means）
+        <input id="K2d" type="number" value="64" min="4" max="256" step="4"/>
+      </label>
+      <label>PQ 网格 k（k×k=K）
+        <input id="kPQ" type="number" value="8" min="2" max="32" step="1"/>
+      </label>
+      <label>动画速度
+        <input id="speed" type="range" min="10" max="300" value="70"/>
+      </label>
+      <label>每次迭代最大步数
+        <input id="maxIter" type="number" value="30" min="3" max="200" step="1"/>
+      </label>
+      <button id="regen">重新生成数据</button>
+      <button id="start">开始/继续迭代</button>
+      <button id="step">单步迭代</button>
+      <button id="resetKM">重置中心</button>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:12px;">
+    <div class="panel">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <b>（A）2D k-means（正确）</b>
+        <span class="small mono" id="status2d">iter=0</span>
+      </div>
+      <canvas id="cv2d" width="520" height="520"></canvas>
+      <div class="small">黑点：数据；红色 ×：中心；彩色圈：Top-N 邻居（True/PQ/OPQ）。</div>
+    </div>
+    <div class="panel">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <b>（B）PQ-like（错误：分轴量化→网格中心）</b>
+        <span class="small mono" id="statusPQ">iterX=0 iterY=0</span>
+      </div>
+      <canvas id="cvpq" width="520" height="520"></canvas>
+      <div class="small">红色 ×：网格中心（由 1D k-means 的 cx/cy 组合得到）。</div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:12px;">
+    <div class="controls">
+      <label>查询点 qx
+        <input id="qx" type="number" value="0.8" step="0.05"/>
+      </label>
+      <label>查询点 qy
+        <input id="qy" type="number" value="0.8" step="0.05"/>
+      </label>
+      <label>Top-N
+        <input id="topN" type="number" value="10" min="1" max="50"/>
+      </label>
+      <button id="applyQ">更新邻居结果</button>
+      <span class="small">
+        <span class="badge b-true">True</span>
+        <span class="badge b-pq">PQ</span>
+        <span class="badge b-opq">OPQ</span>
+      </span>
+      <span class="small mono" id="opqAngle"></span>
+    </div>
+
+    <div class="lists" style="margin-top:8px;">
+      <div class="listbox">
+        <b><span class="badge b-true">True</span> 邻居（真实欧式距离）</b>
+        <ol id="listTrue"></ol>
+      </div>
+      <div class="listbox">
+        <b><span class="badge b-pq">PQ</span> 邻居（分轴量化近似距离）</b>
+        <ol id="listPQ"></ol>
+      </div>
+      <div class="listbox">
+        <b><span class="badge b-opq">OPQ</span> 邻居（旋转后 PQ 近似距离）</b>
+        <ol id="listOPQ"></ol>
+      </div>
+    </div>
+    <div class="small" style="margin-top:8px;">
+      小提示：把查询点放在斜线附近（比如 qx≈qy），你会发现 PQ 更容易选到“网格上看着近但实际偏离斜线”的点；
+      OPQ（旋转后）通常更接近 True 的邻居顺序。
+    </div>
+  </div>
+
+<script>
+/* --------------------- Utils --------------------- */
+function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+function randn(rng){ // Box-Muller
+  let u = 0, v = 0;
+  while(u === 0) u = rng();
+  while(v === 0) v = rng();
+  return Math.sqrt(-2*Math.log(u)) * Math.cos(2*Math.PI*v);
+}
+function makeRng(seed=1234567){
+  let s = seed >>> 0;
+  return function(){
+    // xorshift32
+    s ^= s << 13; s >>>= 0;
+    s ^= s >>> 17; s >>>= 0;
+    s ^= s << 5;  s >>>= 0;
+    return (s >>> 0) / 4294967296;
+  }
+}
+function dist2(a,b){ const dx=a[0]-b[0], dy=a[1]-b[1]; return dx*dx+dy*dy; }
+
+/* --------------------- Data generation --------------------- */
+let rng = makeRng(42);
+let X = [];        // points [[x,y],...]
+let bounds = {minX:-3, maxX:3, minY:-3, maxY:3}; // computed from data
+function genData(n, noise){
+  X = [];
+  // correlated line: x=t+e1, y=t+e2
+  for(let i=0;i<n;i++){
+    const t = randn(rng);
+    const x = t + randn(rng)*noise;
+    const y = t + randn(rng)*noise;
+    X.push([x,y]);
+  }
+  // bounds
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  for(const p of X){
+    minX=Math.min(minX,p[0]); maxX=Math.max(maxX,p[0]);
+    minY=Math.min(minY,p[1]); maxY=Math.max(maxY,p[1]);
+  }
+  // pad
+  const pad = 0.35;
+  const dx = (maxX-minX), dy=(maxY-minY);
+  bounds = {minX:minX-pad*dx, maxX:maxX+pad*dx, minY:minY-pad*dy, maxY:maxY+pad*dy};
+}
+
+/* --------------------- Drawing --------------------- */
+function worldToCanvas(p, W, H){
+  const x = (p[0]-bounds.minX)/(bounds.maxX-bounds.minX);
+  const y = (p[1]-bounds.minY)/(bounds.maxY-bounds.minY);
+  // invert y
+  return [x*W, (1-y)*H];
+}
+function clear(cv){
+  const ctx=cv.getContext("2d");
+  ctx.clearRect(0,0,cv.width,cv.height);
+}
+function drawAxes(ctx, W, H){
+  // light grid
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  ctx.strokeStyle = "#e6e6e6";
+  ctx.lineWidth = 1;
+  const steps = 10;
+  for(let i=1;i<steps;i++){
+    const x = (i/steps)*W;
+    const y = (i/steps)*H;
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawPoints(ctx, pts, alpha=0.20){
+  ctx.save();
+  ctx.fillStyle = "#111";
+  ctx.globalAlpha = alpha;
+  for(const p of pts){
+    const [cx,cy] = worldToCanvas(p, ctx.canvas.width, ctx.canvas.height);
+    ctx.beginPath(); ctx.arc(cx,cy,2.1,0,Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawCenters(ctx, centers, color="#d11", size=7){
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  for(const c of centers){
+    const [cx,cy] = worldToCanvas(c, ctx.canvas.width, ctx.canvas.height);
+    ctx.beginPath();
+    ctx.moveTo(cx-size, cy-size); ctx.lineTo(cx+size, cy+size);
+    ctx.moveTo(cx-size, cy+size); ctx.lineTo(cx+size, cy-size);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawQuery(ctx, q){
+  const [cx,cy] = worldToCanvas(q, ctx.canvas.width, ctx.canvas.height);
+  ctx.save();
+  ctx.fillStyle = "#000";
+  ctx.strokeStyle = "#000";
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(cx,cy,5.5,0,Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx,cy,2.5,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawHighlights(ctx, indices, style){
+  // style: {stroke, fill, r}
+  ctx.save();
+  ctx.lineWidth = 2.2;
+  for(const idx of indices){
+    const p = X[idx];
+    const [cx,cy] = worldToCanvas(p, ctx.canvas.width, ctx.canvas.height);
+    ctx.strokeStyle = style.stroke;
+    ctx.fillStyle = style.fill;
+    ctx.beginPath(); ctx.arc(cx,cy,style.r,0,Math.PI*2); ctx.stroke();
+    ctx.globalAlpha = 0.12;
+    ctx.beginPath(); ctx.arc(cx,cy,style.r,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 1.0;
+  }
+  ctx.restore();
+}
+
+/* --------------------- 2D k-means (Lloyd) --------------------- */
+let C2D = [];
+let labels2D = [];
+let iter2D = 0;
+
+function initKMeans2D(K){
+  C2D = [];
+  labels2D = new Array(X.length).fill(0);
+  iter2D = 0;
+  // init: pick random points
+  for(let i=0;i<K;i++){
+    const p = X[Math.floor(rng()*X.length)];
+    C2D.push([p[0],p[1]]);
+  }
+}
+function stepKMeans2D(){
+  if(C2D.length===0) return;
+  // assign
+  for(let i=0;i<X.length;i++){
+    let best=0, bestD=Infinity;
+    for(let k=0;k<C2D.length;k++){
+      const d = dist2(X[i], C2D[k]);
+      if(d<bestD){ bestD=d; best=k; }
+    }
+    labels2D[i]=best;
+  }
+  // update
+  const sums = C2D.map(()=>[0,0,0]); // sx, sy, cnt
+  for(let i=0;i<X.length;i++){
+    const k = labels2D[i];
+    sums[k][0]+=X[i][0]; sums[k][1]+=X[i][1]; sums[k][2]+=1;
+  }
+  for(let k=0;k<C2D.length;k++){
+    if(sums[k][2]>0){
+      C2D[k] = [sums[k][0]/sums[k][2], sums[k][1]/sums[k][2]];
+    }else{
+      // re-seed empty cluster
+      const p = X[Math.floor(rng()*X.length)];
+      C2D[k] = [p[0],p[1]];
+    }
+  }
+  iter2D++;
+}
+
+/* --------------------- PQ-like: 1D k-means on x and y --------------------- */
+let cx = [], cy = [];
+let iterX = 0, iterY = 0;
+let assignX = [], assignY = [];
+
+function initPQ1D(k){
+  cx=[]; cy=[];
+  assignX = new Array(X.length).fill(0);
+  assignY = new Array(X.length).fill(0);
+  iterX=0; iterY=0;
+  // init centers from random points projections
+  for(let i=0;i<k;i++){
+    const p = X[Math.floor(rng()*X.length)];
+    cx.push(p[0]);
+    cy.push(p[1]);
+  }
+  cx.sort((a,b)=>a-b);
+  cy.sort((a,b)=>a-b);
+}
+function step1DKMeans(axis){ // axis 0 for x, 1 for y
+  const k = cx.length;
+  if(k===0) return;
+  // assign
+  for(let i=0;i<X.length;i++){
+    const v = X[i][axis];
+    let best=0, bestD=Infinity;
+    const centers = axis===0 ? cx : cy;
+    for(let j=0;j<k;j++){
+      const d = (v-centers[j])*(v-centers[j]);
+      if(d<bestD){ bestD=d; best=j; }
+    }
+    if(axis===0) assignX[i]=best; else assignY[i]=best;
+  }
+  // update
+  const sums = new Array(k).fill(0).map(()=>[0,0]); // sum, cnt
+  for(let i=0;i<X.length;i++){
+    const v = X[i][axis];
+    const a = axis===0 ? assignX[i] : assignY[i];
+    sums[a][0]+=v; sums[a][1]+=1;
+  }
+  const centers = axis===0 ? cx : cy;
+  for(let j=0;j<k;j++){
+    if(sums[j][1]>0) centers[j] = sums[j][0]/sums[j][1];
+    else centers[j] = X[Math.floor(rng()*X.length)][axis];
+  }
+  centers.sort((a,b)=>a-b);
+  if(axis===0) iterX++; else iterY++;
+}
+function pqGridCenters(){
+  const g = [];
+  for(const a of cx){
+    for(const b of cy){
+      g.push([a,b]);
+    }
+  }
+  return g;
+}
+
+/* --------------------- OPQ in 2D: PCA rotation + PQ --------------------- */
+let R = [[1,0],[0,1]];       // rotation matrix
+let RT = [[1,0],[0,1]];      // transpose
+let cxR = [], cyR = [];      // PQ centers in rotated space
+let assignXR = [], assignYR = [];
+let codesPQ = [];            // per point: [ix,iy] in original PQ
+let codesOPQ = [];           // per point: [ixR,iyR] in rotated PQ
+
+function matVec(M, v){
+  return [M[0][0]*v[0] + M[0][1]*v[1], M[1][0]*v[0] + M[1][1]*v[1]];
+}
+function computePCArotation(){
+  // compute mean
+  let mx=0,my=0;
+  for(const p of X){ mx+=p[0]; my+=p[1]; }
+  mx/=X.length; my/=X.length;
+  // covariance
+  let sxx=0, syy=0, sxy=0;
+  for(const p of X){
+    const dx=p[0]-mx, dy=p[1]-my;
+    sxx += dx*dx; syy += dy*dy; sxy += dx*dy;
+  }
+  sxx/=X.length; syy/=X.length; sxy/=X.length;
+
+  // eigenvectors of [[sxx,sxy],[sxy,syy]]
+  // angle of principal eigenvector:
+  // theta = 0.5 * atan2(2*sxy, sxx - syy)
+  const theta = 0.5 * Math.atan2(2*sxy, (sxx - syy));
+  // We want rotate data so principal axis aligns with x-axis:
+  // rotate by -theta
+  const c = Math.cos(-theta), s = Math.sin(-theta);
+  R = [[c, -s],[s, c]];
+  RT = [[c, s],[-s, c]];
+  return theta; // original principal angle
+}
+function buildPQCodes(){
+  // PQ codes in original space, based on current cx,cy
+  const k = cx.length;
+  codesPQ = new Array(X.length);
+  for(let i=0;i<X.length;i++){
+    const px=X[i][0], py=X[i][1];
+    let ix=0, bestDx=Infinity;
+    for(let j=0;j<k;j++){
+      const d=(px-cx[j])*(px-cx[j]);
+      if(d<bestDx){bestDx=d; ix=j;}
+    }
+    let iy=0, bestDy=Infinity;
+    for(let j=0;j<k;j++){
+      const d=(py-cy[j])*(py-cy[j]);
+      if(d<bestDy){bestDy=d; iy=j;}
+    }
+    codesPQ[i] = [ix, iy];
+  }
+}
+function initOPQCenters(k){
+  // rotate all points
+  const XR = X.map(p => matVec(R, p));
+  cxR=[]; cyR=[];
+  assignXR = new Array(X.length).fill(0);
+  assignYR = new Array(X.length).fill(0);
+  // init from random rotated points
+  for(let i=0;i<k;i++){
+    const p = XR[Math.floor(rng()*XR.length)];
+    cxR.push(p[0]); cyR.push(p[1]);
+  }
+  cxR.sort((a,b)=>a-b);
+  cyR.sort((a,b)=>a-b);
+
+  // run a few quick 1D steps to stabilize (fast)
+  for(let t=0;t<8;t++){
+    // step on rotated x
+    step1DOnRotated(0);
+    step1DOnRotated(1);
+  }
+  // build codes
+  codesOPQ = new Array(X.length);
+  const kk = cxR.length;
+  for(let i=0;i<X.length;i++){
+    const pr = XR[i];
+    let ix=0, bestDx=Infinity;
+    for(let j=0;j<kk;j++){
+      const d=(pr[0]-cxR[j])*(pr[0]-cxR[j]);
+      if(d<bestDx){bestDx=d; ix=j;}
+    }
+    let iy=0, bestDy=Infinity;
+    for(let j=0;j<kk;j++){
+      const d=(pr[1]-cyR[j])*(pr[1]-cyR[j]);
+      if(d<bestDy){bestDy=d; iy=j;}
+    }
+    codesOPQ[i]=[ix,iy];
+  }
+}
+function step1DOnRotated(axis){
+  const XR = X.map(p => matVec(R, p));
+  const centers = axis===0 ? cxR : cyR;
+  const assign = axis===0 ? assignXR : assignYR;
+  const k = centers.length;
+  // assign
+  for(let i=0;i<XR.length;i++){
+    const v = XR[i][axis];
+    let best=0, bestD=Infinity;
+    for(let j=0;j<k;j++){
+      const d = (v-centers[j])*(v-centers[j]);
+      if(d<bestD){ bestD=d; best=j; }
+    }
+    assign[i]=best;
+  }
+  // update
+  const sums = new Array(k).fill(0).map(()=>[0,0]);
+  for(let i=0;i<XR.length;i++){
+    const v = XR[i][axis];
+    const a = assign[i];
+    sums[a][0]+=v; sums[a][1]+=1;
+  }
+  for(let j=0;j<k;j++){
+    if(sums[j][1]>0) centers[j] = sums[j][0]/sums[j][1];
+  }
+  centers.sort((a,b)=>a-b);
+}
+
+/* --------------------- Neighbor search (True / PQ / OPQ) --------------------- */
+function topKByDistance(dists, K){
+  // dists: array of {i, d}
+  dists.sort((a,b)=>a.d-b.d);
+  return dists.slice(0,K).map(o=>o.i);
+}
+function neighborsTrue(q, topN){
+  const d = [];
+  for(let i=0;i<X.length;i++) d.push({i, d: dist2(q, X[i])});
+  return topKByDistance(d, topN);
+}
+function neighborsPQ(q, topN){
+  // asymmetric distance: use query in float, database point reconstructed from codes
+  const k = cx.length;
+  // LUT for query: Dx[j]=(qx-cx[j])^2, Dy[j]=(qy-cy[j])^2
+  const Dx = new Array(k), Dy = new Array(k);
+  for(let j=0;j<k;j++){
+    Dx[j]=(q[0]-cx[j])*(q[0]-cx[j]);
+    Dy[j]=(q[1]-cy[j])*(q[1]-cy[j]);
+  }
+  const d = [];
+  for(let i=0;i<X.length;i++){
+    const code = codesPQ[i];
+    d.push({i, d: Dx[code[0]] + Dy[code[1]]});
+  }
+  return topKByDistance(d, topN);
+}
+function neighborsOPQ(q, topN){
+  // rotate query, then do PQ in rotated space with cxR/cyR codes
+  const qr = matVec(R, q);
+  const k = cxR.length;
+  const Dx = new Array(k), Dy = new Array(k);
+  for(let j=0;j<k;j++){
+    Dx[j]=(qr[0]-cxR[j])*(qr[0]-cxR[j]);
+    Dy[j]=(qr[1]-cyR[j])*(qr[1]-cyR[j]);
+  }
+  const d = [];
+  for(let i=0;i<X.length;i++){
+    const code = codesOPQ[i];
+    d.push({i, d: Dx[code[0]] + Dy[code[1]]});
+  }
+  return topKByDistance(d, topN);
+}
+function renderList(el, indices, q){
+  el.innerHTML = "";
+  for(const idx of indices){
+    const p = X[idx];
+    const dd = Math.sqrt(dist2(q,p));
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="mono">#${idx}</span>  p=(${p[0].toFixed(3)}, ${p[1].toFixed(3)})  d=${dd.toFixed(4)}`;
+    el.appendChild(li);
+  }
+}
+
+/* --------------------- Main rendering loop --------------------- */
+const cv2d = document.getElementById("cv2d");
+const cvpq = document.getElementById("cvpq");
+const st2d = document.getElementById("status2d");
+const stpq = document.getElementById("statusPQ");
+
+let q = [0.8, 0.8];
+let topTrue=[], topPQ=[], topOPQ=[];
+function redraw(){
+  // (A) 2D canvas
+  const ctxA = cv2d.getContext("2d");
+  clear(cv2d); drawAxes(ctxA, cv2d.width, cv2d.height);
+  drawPoints(ctxA, X, 0.18);
+  drawCenters(ctxA, C2D, "#d11", 6);
+
+  // (B) PQ canvas
+  const ctxB = cvpq.getContext("2d");
+  clear(cvpq); drawAxes(ctxB, cvpq.width, cvpq.height);
+  drawPoints(ctxB, X, 0.18);
+  drawCenters(ctxB, pqGridCenters(), "#d11", 5);
+
+  // query + neighbor highlights (same in both views)
+  drawQuery(ctxA, q); drawQuery(ctxB, q);
+
+  // highlights
+  drawHighlights(ctxA, topTrue, {stroke:"#1a73e8", fill:"#1a73e8", r:7.5});
+  drawHighlights(ctxA, topPQ,   {stroke:"#f57c00", fill:"#f57c00", r:9.0});
+  drawHighlights(ctxA, topOPQ,  {stroke:"#1b8f2b", fill:"#1b8f2b", r:10.5});
+
+  drawHighlights(ctxB, topTrue, {stroke:"#1a73e8", fill:"#1a73e8", r:7.5});
+  drawHighlights(ctxB, topPQ,   {stroke:"#f57c00", fill:"#f57c00", r:9.0});
+  drawHighlights(ctxB, topOPQ,  {stroke:"#1b8f2b", fill:"#1b8f2b", r:10.5});
+
+  st2d.textContent = `iter=${iter2D}`;
+  stpq.textContent = `iterX=${iterX} iterY=${iterY}`;
+}
+
+/* --------------------- Query update --------------------- */
+function updateNeighbors(){
+  const topN = clamp(parseInt(document.getElementById("topN").value,10) || 10, 1, 50);
+  topTrue = neighborsTrue(q, topN);
+  topPQ   = neighborsPQ(q, topN);
+  topOPQ  = neighborsOPQ(q, topN);
+
+  renderList(document.getElementById("listTrue"), topTrue, q);
+  renderList(document.getElementById("listPQ"), topPQ, q);
+  renderList(document.getElementById("listOPQ"), topOPQ, q);
+
+  redraw();
+}
+
+/* --------------------- Interaction: click on canvas to set query point --------------------- */
+function canvasToWorld(ev, cv){
+  const rect = cv.getBoundingClientRect();
+  const x = (ev.clientX - rect.left) / rect.width;
+  const y = (ev.clientY - rect.top) / rect.height;
+  const wx = bounds.minX + x*(bounds.maxX-bounds.minX);
+  const wy = bounds.maxY - y*(bounds.maxY-bounds.minY); // invert
+  return [wx,wy];
+}
+cv2d.addEventListener("click", (ev)=>{
+  q = canvasToWorld(ev, cv2d);
+  document.getElementById("qx").value = q[0].toFixed(3);
+  document.getElementById("qy").value = q[1].toFixed(3);
+  updateNeighbors();
+});
+cvpq.addEventListener("click", (ev)=>{
+  q = canvasToWorld(ev, cvpq);
+  document.getElementById("qx").value = q[0].toFixed(3);
+  document.getElementById("qy").value = q[1].toFixed(3);
+  updateNeighbors();
+});
+
+/* --------------------- Animation --------------------- */
+let timer = null;
+function startAnim(){
+  if(timer) return;
+  const maxIter = clamp(parseInt(document.getElementById("maxIter").value,10) || 30, 3, 200);
+  const speed = clamp(parseInt(document.getElementById("speed").value,10) || 70, 10, 300);
+
+  timer = setInterval(()=>{
+    if(iter2D < maxIter) stepKMeans2D();
+    if(iterX  < maxIter) step1DKMeans(0);
+    if(iterY  < maxIter) step1DKMeans(1);
+
+    // rebuild codes because centers changed
+    buildPQCodes();
+    // OPQ centers fixed here; keep OPQ stable (so you能看 PQ 错误来自切分，而不是 OPQ 动画本身太复杂)
+    updateNeighbors();
+
+    if(iter2D>=maxIter && iterX>=maxIter && iterY>=maxIter){
+      stopAnim();
+    }
+  }, speed);
+}
+function stopAnim(){
+  if(timer){ clearInterval(timer); timer=null; }
+}
+
+/* --------------------- Rebuild pipeline --------------------- */
+function rebuildAll(){
+  const n = clamp(parseInt(document.getElementById("nPts").value,10) || 1200, 200, 6000);
+  const noise = clamp(parseFloat(document.getElementById("noise").value) || 0.12, 0.02, 0.6);
+  const K2d = clamp(parseInt(document.getElementById("K2d").value,10) || 64, 4, 256);
+  const kPQ = clamp(parseInt(document.getElementById("kPQ").value,10) || 8, 2, 32);
+
+  genData(n, noise);
+
+  initKMeans2D(K2d);
+  initPQ1D(kPQ);
+
+  // OPQ rotation via PCA
+  const theta = computePCArotation(); // principal axis angle
+  document.getElementById("opqAngle").textContent =
+    `OPQ(PCA) 主轴角≈ ${(theta*180/Math.PI).toFixed(1)}°，应用旋转≈ ${(-theta*180/Math.PI).toFixed(1)}°`;
+
+  // initialize OPQ PQ centers & codes
+  initOPQCenters(kPQ);
+
+  // build PQ codes
+  buildPQCodes();
+
+  // update query from inputs
+  q = [parseFloat(document.getElementById("qx").value)||0, parseFloat(document.getElementById("qy").value)||0];
+  updateNeighbors();
+}
+
+/* --------------------- Buttons --------------------- */
+document.getElementById("regen").addEventListener("click", ()=>{
+  stopAnim();
+  // reseed rng slightly for variety
+  rng = makeRng((Math.random()*1e9)>>>0);
+  rebuildAll();
+});
+document.getElementById("resetKM").addEventListener("click", ()=>{
+  stopAnim();
+  initKMeans2D(clamp(parseInt(document.getElementById("K2d").value,10)||64,4,256));
+  initPQ1D(clamp(parseInt(document.getElementById("kPQ").value,10)||8,2,32));
+  buildPQCodes();
+  updateNeighbors();
+});
+document.getElementById("start").addEventListener("click", ()=>{
+  if(timer) stopAnim(); else startAnim();
+});
+document.getElementById("step").addEventListener("click", ()=>{
+  stopAnim();
+  stepKMeans2D();
+  step1DKMeans(0);
+  step1DKMeans(1);
+  buildPQCodes();
+  updateNeighbors();
+});
+document.getElementById("applyQ").addEventListener("click", ()=>{
+  q = [parseFloat(document.getElementById("qx").value)||0, parseFloat(document.getElementById("qy").value)||0];
+  updateNeighbors();
+});
+
+/* --------------------- Init --------------------- */
+rebuildAll();
+</script>
+</body>
+</html>
