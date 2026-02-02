@@ -6,6 +6,7 @@ with links to all HTML files.
 """
 
 import os
+import subprocess
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
@@ -71,7 +72,7 @@ def build_folder_tree(html_files):
     return tree
 
 
-def generate_html(html_files, repo_name="Python Demos"):
+def generate_html(html_files, repo_name="Article Demos"):
     """
     Generate the HTML content for index.html
     """
@@ -322,6 +323,78 @@ def main():
     print(f"\nFolders included:")
     for folder in sorted(html_files.keys()):
         print(f"  - {folder} ({len(html_files[folder])} files)")
+
+    # Git operations
+    print("\n" + "="*50)
+    print("Starting git operations...")
+    print("="*50)
+
+    try:
+        # Git add
+        print("\n[1/3] Adding changes to git...")
+        result = subprocess.run(
+            ["git", "add", "-A"],
+            cwd=current_dir,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            print("[OK] Git add successful")
+        else:
+            print(f"[ERROR] Git add failed: {result.stderr}")
+            return
+
+        # Git commit
+        print("\n[2/3] Committing changes...")
+        total_files = sum(len(files) for files in html_files.values())
+        total_folders = len(html_files)
+
+        commit_message = f"""Update index.html - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+- Regenerated index.html with {total_files} HTML files
+- Updated folder structure across {total_folders} folders
+
+Co-Authored-By: Claude (claude-sonnet-4.5) <noreply@anthropic.com>"""
+
+        result = subprocess.run(
+            ["git", "commit", "-m", commit_message],
+            cwd=current_dir,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            print("[OK] Git commit successful")
+            print(f"Commit message:\n{result.stdout}")
+        elif "nothing to commit" in result.stdout:
+            print("[INFO] No changes to commit")
+            return
+        else:
+            print(f"[ERROR] Git commit failed: {result.stderr}")
+            return
+
+        # Git push
+        print("\n[3/3] Pushing to remote...")
+        result = subprocess.run(
+            ["git", "push"],
+            cwd=current_dir,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            print("[OK] Git push successful")
+            print(result.stdout if result.stdout else "Changes pushed to remote repository")
+        else:
+            print(f"[ERROR] Git push failed: {result.stderr}")
+            return
+
+        print("\n" + "="*50)
+        print("[SUCCESS] All operations completed!")
+        print("="*50)
+
+    except FileNotFoundError:
+        print("[ERROR] Git is not installed or not in PATH")
+    except Exception as e:
+        print(f"[ERROR] An error occurred: {str(e)}")
 
 
 if __name__ == "__main__":
