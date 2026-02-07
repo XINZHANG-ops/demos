@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>矩阵变换：全息网格终极版</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #eef2f5; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .container { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; max-width: 1400px; width: 100%; }
+        
+        .panel { 
+            background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); 
+            width: 320px; flex-shrink: 0; display: flex; flex-direction: column; gap: 15px; height: fit-content;
+        }
+        h3 { margin: 0; font-size: 0.95rem; color: #444; border-bottom: 2px solid #f0f0f0; padding-bottom: 8px; margin-bottom: 5px; }
+
+        /* Tabs */
+        .tab-group { display: flex; background: #f1f3f5; padding: 4px; border-radius: 8px; margin-bottom: 10px; }
+        .tab-btn { flex: 1; padding: 8px; border: none; background: transparent; cursor: pointer; font-weight: 600; color: #666; border-radius: 6px; }
+        .tab-btn.active { background: white; color: #0d6efd; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+
+        /* Matrix Inputs */
+        .matrix-wrap { background: #f8f9fa; padding: 10px; border-radius: 8px; border: 1px solid #dee2e6; display: flex; justify-content: center; }
+        .matrix-grid { display: grid; gap: 6px; }
+        .grid-2x3 { grid-template-columns: repeat(3, 1fr); }
+        .grid-3x2 { grid-template-columns: repeat(2, 1fr); }
+        
+        input[type=number] { 
+            width: 50px; padding: 6px; text-align: center; border: 1px solid #ced4da; border-radius: 4px; font-weight: bold; font-family: monospace;
+        }
+        input[type=number]:focus { border-color: #0d6efd; outline: none; }
+
+        /* Plane Selector */
+        .plane-select { display: flex; gap: 5px; justify-content: space-between; margin-top: 5px; }
+        .plane-btn { 
+            flex: 1; font-size: 0.75rem; padding: 6px; border: 1px solid #e0e0e0; background: #fff; cursor: pointer; border-radius: 4px; color: #555;
+        }
+        .plane-btn.active { background: #e7f5ff; border-color: #0d6efd; color: #0d6efd; font-weight: bold; }
+
+        /* Presets */
+        .preset-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .btn-preset { 
+            padding: 8px; border: 1px solid #e9ecef; border-radius: 6px; cursor: pointer; background: white; font-size: 0.85rem; color: #495057; transition: 0.2s;
+        }
+        .btn-preset:hover { background: #f8f9fa; border-color: #adb5bd; }
+
+        .control-box { background: #fff9db; padding: 15px; border-radius: 8px; border: 1px solid #ffec99; }
+        .btn-play { width: 100%; padding: 12px; border: none; border-radius: 6px; cursor: pointer; background: #fab005; color: #fff; font-weight: bold; font-size: 1.1rem; }
+        .btn-play:hover { background: #f08c00; transform: translateY(-1px); }
+
+        /* Canvas */
+        .canvas-box { position: relative; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.1); background: white; }
+        canvas { cursor: grab; display: block; }
+        canvas:active { cursor: grabbing; }
+        
+        .overlay {
+            position: absolute; top: 15px; left: 15px; pointer-events: none;
+            background: rgba(255,255,255,0.9); padding: 6px 10px; border-radius: 6px;
+            font-size: 0.8rem; color: #555; border: 1px solid #eee;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="panel">
+        <div class="tab-group">
+            <button class="tab-btn active" onclick="setMainMode('3to2')" id="tab-3to2">3D → 2D (降维)</button>
+            <button class="tab-btn" onclick="setMainMode('2to3')" id="tab-2to3">2D → 3D (升维)</button>
+        </div>
+
+        <div>
+            <h3>1. 变换矩阵 M (Matrix)</h3>
+            <div class="matrix-wrap">
+                <div class="matrix-grid grid-2x3" id="matrix-inputs"></div>
+            </div>
+            
+            <div id="plane-selector-box" style="margin-top:10px;">
+                <div style="font-size:0.75rem; color:#888; margin-bottom:4px;">投影结果显示在：</div>
+                <div class="plane-select">
+                    <button class="plane-btn active" onclick="setPlane('xy')" id="pl-xy">XY 地板</button>
+                    <button class="plane-btn" onclick="setPlane('xz')" id="pl-xz">XZ 后墙</button>
+                    <button class="plane-btn" onclick="setPlane('yz')" id="pl-yz">YZ 侧墙</button>
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <h3>2. 快速预设 (Presets)</h3>
+            <div class="preset-list" id="preset-container"></div>
+        </div>
+
+        <div>
+            <h3>3. 输入向量 (Vector)</h3>
+            <div style="display:flex; gap:5px; justify-content:center;" id="vector-inputs"></div>
+        </div>
+
+        <div class="control-box">
+            <button class="btn-play" onclick="play()">▶ 播放变换</button>
+            <input type="range" id="slider" min="0" max="1" step="0.01" value="0" style="width:100%; margin-top:10px; cursor:pointer;">
+        </div>
+
+        <button onclick="resetView()" style="margin-top:5px; padding:6px; border:none; background:transparent; color:#888; cursor:pointer; font-size:0.8rem;">⟲ 重置视角</button>
+    </div>
+
+    <div class="canvas-box">
+        <canvas id="canvas" width="900" height="750"></canvas>
+        <div class="overlay">
+            <div>🔴 X轴 &nbsp; 🟢 Y轴 &nbsp; 🔵 Z轴(上)</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // === 1. 核心变量 ===
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const SCALE = 65; 
+    let W = canvas.width, H = canvas.height;
+    
+    // Z-Up 默认视角
+    const DEF_YAW = -Math.PI / 4; 
+    const DEF_PITCH = Math.PI / 6; 
+    
+    let camera = { yaw: DEF_YAW, pitch: DEF_PITCH };
+    let MODE = '3to2'; 
+    let TARGET_PLANE = 'xy'; // xy, xz, yz
+    
+    let t = 0;
+    let animId = null;
+    let isDragging = false, lastPos = {x:0, y:0};
+
+    // DOM Refs
+    const elMatrix = document.getElementById('matrix-inputs');
+    const elVector = document.getElementById('vector-inputs');
+    const elPresets = document.getElementById('preset-container');
+    const elPlaneBox = document.getElementById('plane-selector-box');
+    const slider = document.getElementById('slider');
+
+    // === 2. 初始化 ===
+    initUI();
+    draw();
+
+    // === 3. 交互 ===
+    canvas.addEventListener('mousedown', e => { isDragging=true; lastPos={x:e.offsetX, y:e.offsetY}; });
+    window.addEventListener('mouseup', () => isDragging=false);
+    canvas.addEventListener('mousemove', e => {
+        if(!isDragging) return;
+        let dx = e.offsetX - lastPos.x, dy = e.offsetY - lastPos.y;
+        camera.yaw += dx * 0.005;
+        camera.pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.pitch + dy * 0.005));
+        lastPos = {x:e.offsetX, y:e.offsetY};
+        draw();
+    });
+    slider.addEventListener('input', () => { cancelAnimationFrame(animId); t = parseFloat(slider.value); draw(); });
+
+    // === 4. UI 逻辑 ===
+    function setMainMode(m) {
+        MODE = m;
+        document.getElementById('tab-3to2').className = m==='3to2'?'tab-btn active':'tab-btn';
+        document.getElementById('tab-2to3').className = m==='2to3'?'tab-btn active':'tab-btn';
+        initUI();
+        draw();
+    }
+
+    function setPlane(p) {
+        TARGET_PLANE = p;
+        document.querySelectorAll('.plane-btn').forEach(b => b.classList.remove('active'));
+        document.getElementById('pl-'+p).classList.add('active');
+        draw();
+    }
+
+    function initUI() {
+        elMatrix.innerHTML = ''; elVector.innerHTML = ''; elPresets.innerHTML = '';
+        
+        if (MODE === '3to2') {
+            // 2x3 Matrix
+            elMatrix.className = 'matrix-grid grid-2x3';
+            ['m11','m12','m13', 'm21','m22','m23'].forEach(id => createInput(elMatrix, id));
+            
+            // 3D Vector Input
+            ['vx','vy','vz'].forEach(id => createInput(elVector, id, id==='vz'?3:2));
+            
+            elPlaneBox.style.display = 'block';
+
+            // Presets
+            addPreset('Drop Z (XY)', {m11:1,m12:0,m13:0,m21:0,m22:1,m23:0}, 'xy');
+            addPreset('Drop Y (XZ)', {m11:1,m12:0,m13:0,m21:0,m22:0,m23:1}, 'xz');
+            addPreset('Drop X (YZ)', {m11:0,m12:1,m13:0,m21:0,m22:0,m23:1}, 'yz');
+            addPreset('Iso 投影', {m11:0.7,m12:-0.7,m13:0,m21:0.4,m22:0.4,m23:-0.8}, 'xy');
+            
+            setInputs({m11:1,m12:0,m13:0,m21:0,m22:1,m23:0}); // Default Drop Z
+        } else {
+            // 3x2 Matrix
+            elMatrix.className = 'matrix-grid grid-3x2';
+            ['m11','m12', 'm21','m22', 'm31','m32'].forEach(id => createInput(elMatrix, id));
+            
+            // 2D Vector Input
+            ['vx','vy'].forEach(id => createInput(elVector, id, 2));
+
+            elPlaneBox.style.display = 'none';
+
+            // Presets
+            addPreset('Floor (平铺)', {m11:1,m12:0,m21:0,m22:1,m31:0,m32:0});
+            addPreset('Wall (立墙)', {m11:1,m12:0,m21:0,m22:0,m31:0,m32:1});
+            addPreset('Slope (斜坡)', {m11:1,m12:0,m21:0,m22:1,m31:0.5,m32:0.5});
+            addPreset('Spiral (扭曲)', {m11:0.8,m12:-0.5,m21:0.5,m22:0.8,m31:0.5,m32:0.5});
+            
+            setInputs({m11:1,m12:0,m21:0,m22:1,m31:0,m32:0});
+        }
+    }
+
+    function createInput(parent, id, val=0) {
+        let inp = document.createElement('input');
+        inp.type = 'number'; inp.id = id; inp.value = val; inp.step = 0.5;
+        inp.oninput = () => { cancelAnimationFrame(animId); draw(); };
+        parent.appendChild(inp);
+    }
+
+    function addPreset(name, vals, plane=null) {
+        let btn = document.createElement('button');
+        btn.className = 'btn-preset'; btn.innerText = name;
+        btn.onclick = () => {
+            setInputs(vals);
+            if(plane) setPlane(plane);
+            play();
+        };
+        elPresets.appendChild(btn);
+    }
+
+    function setInputs(obj) {
+        for(let k in obj) { let el = document.getElementById(k); if(el) el.value = obj[k]; }
+    }
+
+    function getVal(id) { return parseFloat(document.getElementById(id)?.value) || 0; }
+
+    function resetView() { camera.yaw = DEF_YAW; camera.pitch = DEF_PITCH; draw(); }
+
+    function play() {
+        cancelAnimationFrame(animId); t = 0;
+        function loop() {
+            t += 0.02; if(t>=1) t=1;
+            slider.value = t; draw();
+            if(t<1) animId = requestAnimationFrame(loop);
+        }
+        loop();
+    }
+
+    // === 5. 投影引擎 (Z-Up) ===
+    function project(x, y, z) {
+        let x1 = x * Math.cos(camera.yaw) - y * Math.sin(camera.yaw);
+        let y1 = x * Math.sin(camera.yaw) + y * Math.cos(camera.yaw);
+        let sx = x1;
+        let sy = -z * Math.cos(camera.pitch) + y1 * Math.sin(camera.pitch);
+        return { x: W/2 + sx * SCALE, y: H/2 + sy * SCALE };
+    }
+
+    // === 6. 绘图主程序 ===
+    function draw() {
+        ctx.clearRect(0,0,W,H);
+        
+        // 1. 画世界背景 (地板 & 墙)
+        drawWorld();
+
+        if (MODE === '3to2') draw3to2();
+        else draw2to3();
+    }
+
+    // --- 降维渲染 (3D -> 2D) ---
+    function draw3to2() {
+        let m11=getVal('m11'), m12=getVal('m12'), m13=getVal('m13');
+        let m21=getVal('m21'), m22=getVal('m22'), m23=getVal('m23');
+        let vx=getVal('vx'), vy=getVal('vy'), vz=getVal('vz');
+
+        // 1. 画静态的 3D 源网格 (The Static Cage - Gray)
+        // 这是一个参考，让用户知道原来的空间长什么样
+        drawGridCube(2, '#adb5bd', 0.5);
+
+        // 2. 画动态的“塌缩网格” (The Collapsing Mesh - Blue)
+        // 这是核心功能：显示整个空间如何被矩阵 M 压扁
+        // m1, m2, m3 是矩阵的列
+        let m1={x:m11, y:m21}, m2={x:m12, y:m22}, m3={x:m13, y:m23};
+        drawCollapsingGrid(2, m1, m2, m3, TARGET_PLANE, 'rgba(13, 110, 253, 0.4)');
+
+        // 3. 画向量
+        let pStart = {x:vx, y:vy, z:vz};
+        let u = m11*vx + m12*vy + m13*vz;
+        let v = m21*vx + m22*vy + m23*vz;
+        
+        let pEnd;
+        if(TARGET_PLANE === 'xy') pEnd={x:u,y:v,z:0};
+        else if(TARGET_PLANE === 'xz') pEnd={x:u,y:0,z:v};
+        else pEnd={x:0,y:u,z:v};
+
+        let pCur = lerp3(pStart, pEnd, t);
+        drawTrajectory(pStart, pEnd, t);
+        drawVector(pStart, '#adb5bd', true); // 原始(虚线)
+        drawVector(pCur, '#fab005', false);  // 当前(实线)
+    }
+
+    // --- 升维渲染 (2D -> 3D) ---
+    function draw2to3() {
+        let m11=getVal('m11'), m12=getVal('m12');
+        let m21=getVal('m21'), m22=getVal('m22');
+        let m31=getVal('m31'), m32=getVal('m32');
+        let vx=getVal('vx'), vy=getVal('vy');
+
+        // 1. 画源平面 (Static Floor Grid - Gray)
+        drawPlaneRect('xy', 3, 'rgba(0,0,0,0.03)', '#ced4da');
+
+        // 2. 画升维网格 (The Lifting Cage - Blue)
+        // 这是你要的“笼子”效果：连接地板和升起平面的线
+        let c1 = lerp3({x:1,y:0,z:0}, {x:m11, y:m21, z:m31}, t);
+        let c2 = lerp3({x:0,y:1,z:0}, {x:m12, y:m22, z:m32}, t);
+        
+        drawLiftingGrid(c1, c2, 3, 'rgba(13, 110, 253, 0.5)');
+
+        // 3. 向量
+        let pStart = {x:vx, y:vy, z:0};
+        let pEnd = {x: m11*vx + m12*vy, y: m21*vx + m22*vy, z: m31*vx + m32*vy};
+        let pCur = lerp3(pStart, pEnd, t);
+
+        drawTrajectory(pStart, pEnd, t);
+        drawVector(pStart, '#adb5bd', true);
+        drawVector(pCur, '#fab005', false);
+    }
+
+    // === 7. 绘图辅助函数 ===
+
+    function drawWorld() {
+        drawPlaneRect('xy', 4, '#f8f9fa', '#e9ecef'); 
+        drawAxis({x:0,y:0,z:0}, 5);
+    }
+
+    // 画 3D 立方体网格 (降维源)
+    function drawGridCube(r, color, width) {
+        ctx.strokeStyle = color; ctx.lineWidth = width;
+        // X Lines
+        for(let y=-r; y<=r; y+=2) for(let z=-r; z<=r; z+=2) drawLine({x:-r,y,z}, {x:r,y,z});
+        // Y Lines
+        for(let x=-r; x<=r; x+=2) for(let z=-r; z<=r; z+=2) drawLine({x,y:-r,z}, {x,y:r,z});
+        // Z Lines
+        for(let x=-r; x<=r; x+=2) for(let y=-r; y<=r; y+=2) drawLine({x,y,z:-r}, {x,y,z:r});
+    }
+
+    // ★ 3D->2D 核心：画整个空间网格的塌缩过程
+    function drawCollapsingGrid(r, m1, m2, m3, plane, color) {
+        function map(x, y, z) {
+            let pOrig = {x,y,z};
+            let u = x*m1.x + y*m2.x + z*m3.x;
+            let v = x*m1.y + y*m2.y + z*m3.y;
+            let pProj;
+            if(plane==='xy') pProj={x:u,y:v,z:0};
+            else if(plane==='xz') pProj={x:u,y:0,z:v};
+            else pProj={x:0,y:u,z:v};
+            return lerp3(pOrig, pProj, t);
+        }
+
+        ctx.strokeStyle = color; ctx.lineWidth = 1;
+        // 简化网格密度，只画关键轮廓线，避免太乱
+        let step = 1; 
+        
+        // 动态绘制所有变形后的网格线
+        for(let y=-r; y<=r; y+=step) for(let z=-r; z<=r; z+=step) drawLine(map(-r,y,z), map(r,y,z));
+        for(let x=-r; x<=r; x+=step) for(let z=-r; z<=r; z+=step) drawLine(map(x,-r,z), map(x,r,z));
+        for(let x=-r; x<=r; x+=step) for(let y=-r; y<=r; y+=step) drawLine(map(x,y,-r), map(x,y,r));
+    }
+
+    // ★ 2D->3D 核心：画升维网格 + 垂直连线 (笼子效果)
+    function drawLiftingGrid(c1, c2, r, color) {
+        function getP(a, b) { return { x: c1.x*a + c2.x*b, y: c1.y*a + c2.y*b, z: c1.z*a + c2.z*b }; }
+        
+        ctx.strokeStyle = color; ctx.lineWidth = 1;
+
+        // 1. 画变形后的平面网格
+        for(let i=-r; i<=r; i++) {
+            drawLine(getP(i,-r), getP(i,r));
+            drawLine(getP(-r,i), getP(r,i));
+        }
+
+        // 2. 画“笼子”连线 (Extrusion Lines)
+        // 连接当前的网格点和地板上的原始点
+        if(t > 0.05) {
+            ctx.setLineDash([2,3]); ctx.strokeStyle = 'rgba(13, 110, 253, 0.3)';
+            // 只画 4 个角和中心，避免太乱
+            let pts = [[-r,-r], [r,-r], [r,r], [-r,r], [0,0]];
+            pts.forEach(p => {
+                let pCur = getP(p[0], p[1]);
+                let pFloor = {x: p[0], y: p[1], z: 0}; // 假设原始是平铺的
+                drawLine(pCur, pFloor);
+            });
+            ctx.setLineDash([]);
+        }
+    }
+
+    function drawPlaneRect(type, r, faceC, lineC) {
+        let pts = [];
+        if(type==='xy') pts=[{x:-r,y:-r,z:0},{x:r,y:-r,z:0},{x:r,y:r,z:0},{x:-r,y:r,z:0}];
+        else if(type==='xz') pts=[{x:-r,y:0,z:0},{x:r,y:0,z:0},{x:r,y:0,z:r},{x:-r,y:0,z:r}]; 
+        else pts=[{x:0,y:-r,z:0},{x:0,y:r,z:0},{x:0,y:r,z:r},{x:0,y:-r,z:r}];
+        let pp = pts.map(p => projectPt(p));
+        ctx.fillStyle = faceC; 
+        ctx.beginPath(); ctx.moveTo(pp[0].x, pp[0].y); for(let i=1;i<4;i++) ctx.lineTo(pp[i].x, pp[i].y); ctx.fill();
+        ctx.strokeStyle = lineC; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(pp[0].x, pp[0].y); for(let i=1;i<4;i++) ctx.lineTo(pp[i].x, pp[i].y); ctx.closePath(); ctx.stroke();
+        for(let i=-r+1; i<r; i++) {
+            if(type==='xy') { drawLine({x:i,y:-r,z:0},{x:i,y:r,z:0}, lineC,0.5); drawLine({x:-r,y:i,z:0},{x:r,y:i,z:0}, lineC,0.5); }
+        }
+    }
+
+    function drawAxis(o, len) {
+        drawArrow(o, {x:len,y:0,z:0}, '#ff6b6b');
+        drawArrow(o, {x:0,y:len,z:0}, '#51cf66');
+        drawArrow(o, {x:0,y:0,z:len}, '#339af0');
+    }
+    function drawArrow(s, e, color) {
+        let ps = projectPt(s), pe = projectPt(e);
+        ctx.strokeStyle = color; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(ps.x, ps.y); ctx.lineTo(pe.x, pe.y); ctx.stroke();
+    }
+    function drawVector(v, color, isGhost) {
+        let s = {x:0,y:0,z:0}, e = v;
+        let ps = projectPt(s), pe = projectPt(e);
+        ctx.setLineDash(isGhost ? [4,4] : []); ctx.lineWidth = isGhost ? 2 : 4;
+        ctx.strokeStyle = color;
+        ctx.beginPath(); ctx.moveTo(ps.x, ps.y); ctx.lineTo(pe.x, pe.y); ctx.stroke();
+        ctx.fillStyle = color; ctx.beginPath(); ctx.arc(pe.x, pe.y, isGhost?3:6, 0, Math.PI*2); ctx.fill(); ctx.setLineDash([]);
+        if(!isGhost) {
+            let pd = projectPt({x:v.x, y:v.y, z:0});
+            ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth=1;
+            ctx.beginPath(); ctx.moveTo(pe.x, pe.y); ctx.lineTo(pd.x, pd.y); ctx.stroke();
+        }
+    }
+    function drawTrajectory(s, e, t) {
+        let ps = projectPt(s);
+        ctx.beginPath(); ctx.moveTo(ps.x, ps.y);
+        let steps = 15;
+        for(let i=0; i<=steps*t; i++) {
+            let p = lerp3(s, e, i/steps);
+            let pp = projectPt(p);
+            ctx.lineTo(pp.x, pp.y);
+        }
+        ctx.strokeStyle = '#fab005'; ctx.lineWidth = 2; ctx.setLineDash([3,3]); ctx.stroke(); ctx.setLineDash([]);
+    }
+    function drawLine(p1, p2, color, w) {
+        let pp1=projectPt(p1), pp2=projectPt(p2);
+        if(color) ctx.strokeStyle = color; if(w) ctx.lineWidth = w;
+        ctx.beginPath(); ctx.moveTo(pp1.x, pp1.y); ctx.lineTo(pp2.x, pp2.y); ctx.stroke();
+    }
+    function projectPt(p) { return project(p.x, p.y, p.z); }
+    function lerp3(a, b, t) { return { x: a.x+(b.x-a.x)*t, y: a.y+(b.y-a.y)*t, z: a.z+(b.z-a.z)*t }; }
+</script>
+</body>
+</html>

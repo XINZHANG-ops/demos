@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>矩阵变换：双网格对比版</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .container { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; max-width: 1100px; width: 100%; }
+        
+        /* 左侧面板 */
+        .panel { 
+            background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); 
+            width: 280px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px;
+        }
+        h3 { margin: 0; font-size: 0.95rem; color: #444; border-bottom: 2px solid #f1f3f5; padding-bottom: 8px; }
+
+        /* 输入区域 */
+        .input-block { background: #f8f9fa; padding: 10px; border-radius: 8px; border: 1px solid #e9ecef; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .field { display: flex; flex-direction: column; align-items: center; }
+        .field label { font-size: 0.7rem; color: #888; margin-bottom: 2px; font-weight: 600; }
+        .field input { 
+            width: 100%; padding: 5px; text-align: center; border: 1px solid #ced4da; border-radius: 4px; 
+            font-weight: bold; color: #333; font-size: 0.95rem;
+        }
+
+        /* 预设按钮 */
+        .preset-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .btn-preset { 
+            padding: 8px; border: none; border-radius: 5px; cursor: pointer; font-size: 0.8rem; background: #e7f5ff; color: #1971c2; font-weight: 600;
+        }
+        .btn-preset:hover { background: #d0ebff; }
+
+        /* 播放控制 */
+        .control-box { background: #fff9db; padding: 12px; border-radius: 8px; border: 1px solid #ffec99; }
+        input[type=range] { width: 100%; cursor: pointer; margin: 8px 0; }
+        .btn-play { 
+            width: 100%; padding: 10px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; 
+            background: #fab005; color: #fff; font-size: 1rem; text-shadow: 0 1px 1px rgba(0,0,0,0.2);
+        }
+        .btn-play:hover { background: #f08c00; transform: translateY(-1px); }
+
+        .legend { font-size: 0.8rem; color: #555; margin-top: 10px; display: grid; gap: 6px; background: #fff; padding: 8px; border-radius: 6px; border: 1px solid #eee; }
+        .legend-item { display: flex; align-items: center; gap: 8px; }
+        .line-sample { width: 20px; height: 3px; display: inline-block; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+        /* 画布 */
+        canvas { background: white; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="panel">
+            <div class="input-block">
+                <h3>1. 快速预设</h3>
+                <div class="preset-grid">
+                    <button class="btn-preset" onclick="applyPreset('scale')">缩放 (Scale)</button>
+                    <button class="btn-preset" onclick="applyPreset('rotate')">旋转 (Rotate)</button>
+                    <button class="btn-preset" onclick="applyPreset('shear')">剪切 (Shear)</button>
+                    <button class="btn-preset" onclick="applyPreset('identity')">复原 (Reset)</button>
+                </div>
+            </div>
+
+            <div class="input-block">
+                <h3>2. 目标矩阵 (Matrix)</h3>
+                <div class="grid-2">
+                    <div class="field"><label>a (xx)</label><input type="number" id="a" value="1" step="0.1"></div>
+                    <div class="field"><label>b (yx)</label><input type="number" id="b" value="0" step="0.1"></div>
+                    <div class="field"><label>c (xy)</label><input type="number" id="c" value="0" step="0.1"></div>
+                    <div class="field"><label>d (yy)</label><input type="number" id="d" value="2" step="0.1"></div>
+                </div>
+            </div>
+
+            <div class="input-block">
+                <h3>3. 你的向量 (Vector)</h3>
+                <div class="grid-2">
+                    <div class="field"><label>x</label><input type="number" id="vx" value="1" step="0.5"></div>
+                    <div class="field"><label>y</label><input type="number" id="vy" value="1" step="0.5"></div>
+                </div>
+            </div>
+
+            <div class="control-box">
+                <button class="btn-play" onclick="playAnimation()">▶ 播放变换</button>
+                <input type="range" id="slider" min="0" max="1" step="0.01" value="0">
+                <div style="font-size:0.8rem; text-align:center; color:#e67700; font-weight:bold;" id="mode-badge">
+                    [模式: 线性]
+                </div>
+            </div>
+
+            <div class="legend">
+                <div class="legend-item"><span class="line-sample" style="background:#ced4da"></span> 原始网格 (基准)</div>
+                <div class="legend-item"><span class="line-sample" style="background:rgba(0,120,255,0.6)"></span> 变换网格 (结果)</div>
+                <div class="legend-item"><span class="dot" style="background:#adb5bd"></span> 原始向量 (Ghost)</div>
+                <div class="legend-item"><span class="dot" style="background:#fab005"></span> 变换向量 (Hero)</div>
+            </div>
+        </div>
+
+        <canvas id="canvas" width="650" height="650"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width, H = canvas.height;
+        const CX = W/2, CY = H/2;
+        const SCALE = 50; 
+
+        const els = {
+            a: document.getElementById('a'), b: document.getElementById('b'),
+            c: document.getElementById('c'), d: document.getElementById('d'),
+            vx: document.getElementById('vx'), vy: document.getElementById('vy'),
+            slider: document.getElementById('slider'),
+            badge: document.getElementById('mode-badge')
+        };
+
+        let animationId = null;
+
+        // 绑定事件
+        Object.values(els).forEach(el => {
+            if(el && el.tagName === 'INPUT') el.addEventListener('input', () => {
+                cancelAnimationFrame(animationId);
+                draw();
+            });
+        });
+
+        function applyPreset(type) {
+            if (type === 'identity') setVals(1, 0, 0, 1, 1, 1);
+            else if (type === 'scale') setVals(2, 0, 0, 0.5, 1, 2);
+            else if (type === 'rotate') setVals(0, -1, 1, 0, 2, 0); 
+            else if (type === 'shear') setVals(1, 1, 0, 1, 0, 2);
+            playAnimation();
+        }
+
+        function setVals(a, b, c, d, vx, vy) {
+            els.a.value = a; els.b.value = b;
+            els.c.value = c; els.d.value = d;
+            els.vx.value = vx; els.vy.value = vy;
+        }
+
+        function playAnimation() {
+            cancelAnimationFrame(animationId);
+            let t = 0;
+            function loop() {
+                t += 0.015;
+                if (t >= 1) t = 1;
+                els.slider.value = t;
+                draw();
+                if (t < 1) animationId = requestAnimationFrame(loop);
+            }
+            loop();
+        }
+
+        // 核心绘图
+        function draw() {
+            ctx.clearRect(0,0,W,H);
+            
+            const ma = parseFloat(els.a.value)||0, mb = parseFloat(els.b.value)||0;
+            const mc = parseFloat(els.c.value)||0, md = parseFloat(els.d.value)||0;
+            const vx = parseFloat(els.vx.value)||0, vy = parseFloat(els.vy.value)||0;
+            const t = parseFloat(els.slider.value);
+
+            // 1. 判断插值模式
+            const isRotationLike = (Math.abs(ma - md) < 0.1) && (Math.abs(mb + mc) < 0.1);
+            const isPolar = isRotationLike && (Math.abs(ma*md - mb*mc) > 0.01);
+            els.badge.innerText = isPolar ? "[自动模式: 圆弧插值 (旋转)]" : "[自动模式: 线性插值]";
+
+            // 2. 计算插值矩阵
+            let ca, cb, cc, cd;
+            if (isPolar) {
+                const i_len = Math.sqrt(ma*ma + mc*mc), i_ang = Math.atan2(mc, ma);
+                const j_len = Math.sqrt(mb*mb + md*md), j_ang = Math.atan2(md, mb);
+                const cur_i_len = 1 + (i_len - 1) * t;
+                const cur_j_len = 1 + (j_len - 1) * t;
+                const cur_i_ang = 0 + (i_ang - 0) * t;
+                const cur_j_ang = Math.PI/2 + (j_ang - Math.PI/2) * t;
+                ca = cur_i_len * Math.cos(cur_i_ang); cc = cur_i_len * Math.sin(cur_i_ang);
+                cb = cur_j_len * Math.cos(cur_j_ang); cd = cur_j_len * Math.sin(cur_j_ang);
+            } else {
+                ca = 1 + (ma - 1) * t; cb = 0 + (mb - 0) * t;
+                cc = 0 + (mc - 0) * t; cd = 1 + (md - 1) * t;
+            }
+
+            const range = 10; // 网格范围
+
+            // === 3. 画原始网格 (Static - Gray) ===
+            // 这是你的“参照系”
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = '#e0e0e0'; // 明显的灰色
+            
+            // 为了区分，我们先画普通网格线
+            for(let i=-range; i<=range; i++) {
+                // 原始网格的 transform 就是 Identity (1,0,0,1)
+                drawLine(toScreen(i, -range), toScreen(i, range));
+                drawLine(toScreen(-range, i), toScreen(range, i));
+            }
+            
+            // 加重原始坐标轴
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#adb5bd'; // 深灰轴
+            drawLine(toScreen(-range, 0), toScreen(range, 0));
+            drawLine(toScreen(0, -range), toScreen(0, range));
+
+            // === 4. 画变换网格 (Dynamic - Blue) ===
+            // 这是“变形后”的世界
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = 'rgba(0, 120, 255, 0.3)'; // 半透明蓝
+            
+            for(let i=-range; i<=range; i++) {
+                // 竖线变换
+                let p1 = transform(i, -range, ca,cb,cc,cd);
+                let p2 = transform(i, range, ca,cb,cc,cd);
+                // 每次都要beginPath，否则颜色会混
+                ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+                
+                // 横线变换
+                let p3 = transform(-range, i, ca,cb,cc,cd);
+                let p4 = transform(range, i, ca,cb,cc,cd);
+                ctx.beginPath(); ctx.moveTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y); ctx.stroke();
+            }
+
+            // === 5. 画基向量对比 (Basis Vectors) ===
+            // 原始基 (黑)
+            drawArrow(1, 0, '#343a40', 1); 
+            drawArrow(0, 1, '#343a40', 1);
+
+            // 变换基 (红绿)
+            drawArrow(ca, cc, 'rgba(255,107,107, 0.8)', 2); // i'
+            drawArrow(cb, cd, 'rgba(81, 207, 102, 0.8)', 2); // j'
+
+            // === 6. 画用户向量对比 (User Vector) ===
+            
+            // 6.1 原始向量位置 (Ghost) - 虚线
+            drawArrow(vx, vy, '#adb5bd', 3, [5,5]); 
+            
+            // 6.2 轨迹 (Trace)
+            ctx.strokeStyle = '#fcc419';
+            ctx.setLineDash([3,3]);
+            ctx.beginPath();
+            const steps = 40; 
+            for(let s=0; s<=steps*t; s++) {
+                let st = s/steps;
+                let tx, ty;
+                if(isPolar) {
+                    let i_len = Math.sqrt(ma*ma+mc*mc), i_ang = Math.atan2(mc,ma);
+                    let j_len = Math.sqrt(mb*mb+md*md), j_ang = Math.atan2(md,mb);
+                    let ci = 1+(i_len-1)*st, cang = i_ang*st;
+                    let cj = 1+(j_len-1)*st, cjang = Math.PI/2 + (j_ang-Math.PI/2)*st;
+                    tx = (ci*Math.cos(cang))*vx + (cj*Math.cos(cjang))*vy;
+                    ty = (ci*Math.sin(cang))*vx + (cj*Math.sin(cjang))*vy;
+                } else {
+                    let ta = 1+(ma-1)*st, tb = mb*st, tc = mc*st, td = 1+(md-1)*st;
+                    tx = ta*vx+tb*vy; ty = tc*vx+td*vy;
+                }
+                let p = toScreen(tx, ty);
+                if(s===0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // 6.3 当前向量 (Hero) - 实心
+            let curX = ca*vx + cb*vy;
+            let curY = cc*vx + cd*vy;
+            drawArrow(curX, curY, '#fcc419', 4);
+        }
+
+        // Utils
+        function transform(x, y, a,b,c,d) { return toScreen(a*x+b*y, c*x+d*y); }
+        function toScreen(x, y) { return { x: CX + x * SCALE, y: CY - y * SCALE }; }
+        function drawLine(p1, p2) { // 简单版，复用当前strokeStyle
+            ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+        }
+        function drawArrow(x, y, color, width=3, dash=[]) {
+            const p0 = toScreen(0,0);
+            const p1 = toScreen(x, y);
+            const angle = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+            const head = 8 + width;
+            ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y);
+            ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.beginPath(); ctx.fillStyle = color;
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p1.x - head*Math.cos(angle-Math.PI/6), p1.y - head*Math.sin(angle-Math.PI/6));
+            ctx.lineTo(p1.x - head*Math.cos(angle+Math.PI/6), p1.y - head*Math.sin(angle+Math.PI/6));
+            ctx.fill();
+        }
+
+        draw(); // init
+    </script>
+</body>
+</html>
