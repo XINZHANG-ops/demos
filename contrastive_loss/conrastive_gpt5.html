@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Contrastive Loss 可视化（正负边 + 温度 + Batch）</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: #f0f2f5;
+      margin: 0;
+      padding: 18px;
+      color: #333;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    #controls{
+      background:#fff;
+      padding: 16px 18px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      display:flex;
+      flex-wrap:wrap;
+      gap:16px 22px;
+      align-items:flex-end;
+      justify-content:center;
+      max-width: 980px;
+    }
+    .group{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      min-width: 150px;
+    }
+    label{ font-weight: 650; font-size: 13px; color:#222; }
+    input[type="range"]{ width: 170px; }
+    select, button{
+      border: 1px solid #d0d0d0;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 14px;
+      background:#fff;
+    }
+    button{
+      border:none;
+      cursor:pointer;
+      font-weight:700;
+      color:#fff;
+      background:#4CAF50;
+    }
+    button:hover{ filter: brightness(0.96); }
+    button.secondary{ background:#ff9800; }
+    button.ghost{
+      background:#607d8b;
+    }
+    .hint{ font-size: 12px; color:#666; }
+    #chart-container{
+      background:#fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+      padding: 10px;
+      border: 2px solid #ddd;
+    }
+    svg{
+      display:block;
+      background:#fafafa;
+      border-radius: 10px;
+      cursor: grab;
+    }
+    svg:active{ cursor: grabbing; }
+    .node{
+      stroke:#fff;
+      stroke-width:1.5px;
+    }
+    .link-pos{
+      stroke:#2e7d32;
+      stroke-opacity:0.35;
+      stroke-width:1.2px;
+    }
+    .link-neg{
+      stroke:#c62828;
+      stroke-opacity:0.22;
+      stroke-width:1.1px;
+      stroke-dasharray: 4 4;
+    }
+    .legend{
+      display:flex;
+      gap:14px;
+      align-items:center;
+      font-size: 12px;
+      color:#666;
+      margin-top: -4px;
+    }
+    .pill{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background:#fff;
+      border: 1px solid #e5e5e5;
+    }
+    .dot{
+      width:10px;height:10px;border-radius:50%;
+      display:inline-block;
+    }
+    .line{
+      width:16px;height:0;border-top:2px solid #999; display:inline-block;
+    }
+  </style>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+
+  <h2 style="margin: 0;">Contrastive Loss 可视化（正负边 + 温度 + Batch）</h2>
+  <div class="legend">
+    <span class="pill"><span class="line" style="border-top-color:#2e7d32;"></span> 正边（同类拉近）</span>
+    <span class="pill"><span class="line" style="border-top-color:#c62828; border-top-style:dashed;"></span> 负边（异类推远）</span>
+    <span class="pill"><span class="dot" style="background:#666;"></span> 点可拖拽</span>
+  </div>
+
+  <div id="controls">
+    <div class="group">
+      <label>类别数量</label>
+      <select id="numClasses">
+        <option value="3">3 类</option>
+        <option value="5" selected>5 类</option>
+        <option value="10">10 类</option>
+        <option value="15">15 类</option>
+      </select>
+      <div class="hint">颜色 = 类别</div>
+    </div>
+
+    <div class="group">
+      <label>点数量</label>
+      <input id="numNodes" type="range" min="40" max="240" value="120" step="10">
+      <div class="hint"><span id="numNodesText">120</span> 个</div>
+    </div>
+
+    <div class="group">
+      <label>正边数量/点</label>
+      <input id="posEdgesPerNode" type="range" min="0" max="6" value="2" step="1">
+      <div class="hint">每点连 <span id="posEdgesText">2</span> 条同类边</div>
+    </div>
+
+    <div class="group">
+      <label>负边数量/anchor（batch）</label>
+      <input id="negPerAnchor" type="range" min="0" max="30" value="10" step="1">
+      <div class="hint">每个 anchor 采样 <span id="negEdgesText">10</span> 个负样本</div>
+    </div>
+
+    <div class="group">
+      <label>Batch 大小</label>
+      <input id="batchSize" type="range" min="5" max="80" value="30" step="5">
+      <div class="hint">每轮抽 <span id="batchText">30</span> 个 anchor</div>
+    </div>
+
+    <div class="group">
+      <label>温度 T（InfoNCE-ish）</label>
+      <input id="temperature" type="range" min="0.05" max="1.2" value="0.2" step="0.05">
+      <div class="hint">T 越小：hard negative 推得越狠</div>
+    </div>
+
+    <div class="group">
+      <label>同类拉力（正边）</label>
+      <input id="posStrength" type="range" min="0" max="0.5" value="0.06" step="0.01">
+      <div class="hint">Pull = <span id="posStrengthText">0.06</span></div>
+    </div>
+
+    <div class="group">
+      <label>异类推力（负边）</label>
+      <input id="negStrength" type="range" min="0" max="900" value="250" step="25">
+      <div class="hint">Push = <span id="negStrengthText">250</span></div>
+    </div>
+
+    <div class="group">
+      <label>摩擦（慢动作）</label>
+      <input id="friction" type="range" min="0.2" max="0.9" value="0.62" step="0.02">
+      <div class="hint">越大越慢</div>
+    </div>
+
+    <div class="group">
+      <label>刷新负边频率（ms）</label>
+      <input id="refreshMs" type="range" min="150" max="2000" value="700" step="50">
+      <div class="hint">模拟 SGD steps</div>
+    </div>
+
+    <div class="group" style="min-width: 240px;">
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <button class="secondary" id="regen">重新生成</button>
+        <button class="ghost" id="shake">扰动一下</button>
+        <button id="toggle">暂停</button>
+      </div>
+      <div class="hint">暂停后仍可拖动点观察局部结构</div>
+    </div>
+  </div>
+
+  <div id="chart-container">
+    <svg id="chart" width="900" height="620"></svg>
+  </div>
+
+<script>
+(() => {
+  const svg = d3.select("#chart");
+  const width = +svg.attr("width");
+  const height = +svg.attr("height");
+  const radius = 7;
+
+  let simulation = null;
+  let nodes = [];
+  let posLinks = [];
+  let negLinks = [];      // 负边会周期性刷新
+  let timer = null;
+  let running = true;
+
+  const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
+
+  // ---------- UI helpers ----------
+  function q(id){ return document.getElementById(id); }
+  function valNum(id){ return +q(id).value; }
+  function valStr(id){ return q(id).value; }
+  function setText(id, text){ q(id).textContent = text; }
+
+  function refreshUiTexts(){
+    setText("numNodesText", valNum("numNodes"));
+    setText("posEdgesText", valNum("posEdgesPerNode"));
+    setText("negEdgesText", valNum("negPerAnchor"));
+    setText("batchText", valNum("batchSize"));
+    setText("posStrengthText", valNum("posStrength").toFixed(2));
+    setText("negStrengthText", valNum("negStrength"));
+  }
+
+  ["numNodes","posEdgesPerNode","negPerAnchor","batchSize","posStrength","negStrength"].forEach(id=>{
+    q(id).addEventListener("input", refreshUiTexts);
+  });
+  refreshUiTexts();
+
+  // ---------- data ----------
+  function initData(){
+    const numClasses = +valStr("numClasses");
+    const n = valNum("numNodes");
+    nodes = [];
+    posLinks = [];
+    negLinks = [];
+
+    // 初始：中心附近随机，模拟“未训练”
+    for(let i=0;i<n;i++){
+      nodes.push({
+        id: i,
+        group: i % numClasses,
+        x: width/2 + (Math.random()-0.5)*70,
+        y: height/2 + (Math.random()-0.5)*70,
+      });
+    }
+
+    // 构建正边：每点连接 k 个同类点
+    const k = valNum("posEdgesPerNode");
+    const byGroup = d3.group(nodes, d=>d.group);
+
+    nodes.forEach(a=>{
+      const peers = (byGroup.get(a.group) || []).filter(p => p.id !== a.id);
+      for(let t=0;t<k;t++){
+        if(peers.length===0) break;
+        const b = peers[Math.floor(Math.random()*peers.length)];
+        posLinks.push({ source: a.id, target: b.id });
+      }
+    });
+
+    restartSimulation();
+    startNegSamplingLoop();
+  }
+
+  // sim ≈ -||xi-xj||^2 (越近越大)
+  function simScore(a, b){
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return -(dx*dx + dy*dy);
+  }
+
+  // softmax weights for negatives: w_j = exp(sim/T) / sum exp(sim/T)
+  function softmaxWeights(anchor, cands, T){
+    const scores = cands.map(n => simScore(anchor, n) / Math.max(1e-6, T));
+    const m = Math.max(...scores);
+    const exps = scores.map(s => Math.exp(s - m));
+    const sum = exps.reduce((p,c)=>p+c,0) || 1;
+    return exps.map(e => e/sum);
+  }
+
+  // 每一步：抽 batch anchors，为每个 anchor 采样 negPerAnchor 个负样本，并给每条负边一个权重
+  function resampleNegLinks(){
+    const n = nodes.length;
+    if(n === 0) return;
+
+    const batchSize = Math.min(valNum("batchSize"), n);
+    const negPerAnchor = valNum("negPerAnchor");
+    const T = valNum("temperature");
+
+    // 随机抽 anchors
+    const anchors = d3.shuffle(nodes.slice()).slice(0, batchSize);
+
+    const newNeg = [];
+
+    for(const a of anchors){
+      // 候选：异类
+      const cands = nodes.filter(x => x.group !== a.group);
+      if(cands.length === 0 || negPerAnchor === 0) continue;
+
+      // 先随机取一批候选，再对它们做 softmax 权重（模拟 batch 里竞争）
+      const poolSize = Math.min(cands.length, Math.max(negPerAnchor * 3, negPerAnchor));
+      const pool = d3.shuffle(cands.slice()).slice(0, poolSize);
+
+      const w = softmaxWeights(a, pool, T);
+
+      // 采样 negPerAnchor 条（允许重复没关系，重复意味着这个负样本在这一步“更常见”）
+      for(let t=0;t<negPerAnchor;t++){
+        // 按权重抽样（更像 hard negatives）
+        let r = Math.random();
+        let idx = 0;
+        while(idx < w.length){
+          r -= w[idx];
+          if(r <= 0) break;
+          idx++;
+        }
+        idx = Math.min(idx, pool.length-1);
+        const b = pool[idx];
+        // weight 用来调节推力强弱
+        newNeg.push({ source: a.id, target: b.id, w: w[idx] });
+      }
+    }
+
+    negLinks = newNeg;
+
+    // 更新 force（只更新 neg force 的 links）
+    if(simulation){
+      simulation.force("negLink").links(negLinks);
+      simulation.alpha(0.35).restart();
+    }
+
+    // 更新画面
+    renderLinks();
+  }
+
+  // ---------- rendering ----------
+  let gPos = null, gNeg = null, gNode = null;
+  let posSel = null, negSel = null, nodeSel = null;
+
+  function restartSimulation(){
+    svg.selectAll("*").remove();
+    if(simulation) simulation.stop();
+
+    const posStrength = valNum("posStrength");
+    const friction = valNum("friction");
+
+    gPos = svg.append("g");
+    gNeg = svg.append("g");
+    gNode = svg.append("g");
+
+    // 初次渲染
+    posSel = gPos.selectAll("line")
+      .data(posLinks)
+      .join("line")
+      .attr("class","link-pos");
+
+    negSel = gNeg.selectAll("line")
+      .data(negLinks)
+      .join("line")
+      .attr("class","link-neg");
+
+    nodeSel = gNode.selectAll("circle")
+      .data(nodes)
+      .join("circle")
+      .attr("class","node")
+      .attr("r", radius)
+      .attr("fill", d => colorScale(d.group))
+      .call(d3.drag()
+        .on("start", dragstarted)
+        .on("drag", dragged)
+        .on("end", dragended)
+      );
+
+    // 注意：这里的 “negLink” 是自定义：用 d3.forceLink 但 distance 取负边目标距离
+    // 然后我们用一个 trick：给负边设置很大的“期望距离”，并用 strength 去推开（更直观）
+    // strength 里乘以权重 w，实现 hard negative 强推。
+    simulation = d3.forceSimulation(nodes)
+      .velocityDecay(friction)
+
+      // 正边：拉近
+      .force("posLink", d3.forceLink(posLinks)
+        .id(d => d.id)
+        .distance(20)
+        .strength(posStrength)
+      )
+
+      // 负边：更像“让距离变大”
+      .force("negLink", d3.forceLink(negLinks)
+        .id(d => d.id)
+        .distance(170)  // 负边希望“远一点”
+        .strength(d => {
+          const base = valNum("negStrength") / 1000; // 缩放到合理范围
+          const w = (d.w ?? 0.05);
+          return base * (0.25 + 3.0*w); // w 大的（更像的负样本）推得更狠
+        })
+      )
+
+      // 向心：避免飞走
+      .force("x", d3.forceX(width/2).strength(0.03))
+      .force("y", d3.forceY(height/2).strength(0.03))
+
+      // 碰撞
+      .force("collide", d3.forceCollide(radius + 2).strength(1));
+
+    simulation.on("tick", () => {
+      // 围墙
+      for(const d of nodes){
+        d.x = Math.max(radius, Math.min(width - radius, d.x));
+        d.y = Math.max(radius, Math.min(height - radius, d.y));
+      }
+
+      // 更新连线
+      posSel
+        .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+
+      negSel
+        .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+
+      // 更新节点
+      nodeSel
+        .attr("cx", d => d.x)
+        .attr("cy", d => d.y);
+    });
+  }
+
+  function renderLinks(){
+    if(!gNeg) return;
+    negSel = gNeg.selectAll("line")
+      .data(negLinks, d => `${d.source.id ?? d.source}-${d.target.id ?? d.target}-${Math.random()}`)
+      .join("line")
+      .attr("class","link-neg");
+  }
+
+  // ---------- controls ----------
+  function updateForces(){
+    if(!simulation) return;
+    simulation.force("posLink").strength(valNum("posStrength"));
+    simulation.velocityDecay(valNum("friction"));
+    // neg strength 是动态函数，直接 alpha restart 让它生效即可
+    simulation.alpha(0.4).restart();
+  }
+
+  function startNegSamplingLoop(){
+    if(timer) clearInterval(timer);
+    const ms = valNum("refreshMs");
+    timer = setInterval(() => {
+      if(!running) return;
+      resampleNegLinks();
+    }, ms);
+  }
+
+  // drag
+  function dragstarted(event){
+    if(!event.active) simulation.alphaTarget(0.25).restart();
+    event.subject.fx = event.subject.x;
+    event.subject.fy = event.subject.y;
+  }
+  function dragged(event){
+    event.subject.fx = event.x;
+    event.subject.fy = event.y;
+  }
+  function dragended(event){
+    if(!event.active) simulation.alphaTarget(0);
+    event.subject.fx = null;
+    event.subject.fy = null;
+  }
+
+  // wire UI
+  q("regen").addEventListener("click", initData);
+  q("shake").addEventListener("click", () => { if(simulation){ simulation.alpha(1).restart(); }});
+
+  q("toggle").addEventListener("click", () => {
+    running = !running;
+    q("toggle").textContent = running ? "暂停" : "继续";
+    if(running && simulation) simulation.alpha(0.35).restart();
+  });
+
+  ["posStrength","negStrength","friction","temperature","negPerAnchor","batchSize"].forEach(id=>{
+    q(id).addEventListener("input", () => {
+      updateForces();
+    });
+  });
+
+  q("refreshMs").addEventListener("input", startNegSamplingLoop);
+  q("numClasses").addEventListener("change", initData);
+  q("numNodes").addEventListener("input", () => { /* 只更新显示 */ });
+  q("numNodes").addEventListener("change", initData);
+  q("posEdgesPerNode").addEventListener("change", initData);
+
+  // start
+  initData();
+})();
+</script>
+</body>
+</html>

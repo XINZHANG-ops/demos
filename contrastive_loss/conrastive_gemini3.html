@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contrastive Loss 慢动作可视化</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        #controls {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            align-items: center;
+            justify-content: center;
+            max-width: 800px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        label {
+            font-weight: 600;
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+        input[type=range] {
+            width: 150px;
+        }
+        select, button {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            font-weight: bold;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button.reset {
+            background-color: #ff9800;
+        }
+        #chart-container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            padding: 10px;
+            border: 2px solid #ddd; /* 加个边框让你看到边界 */
+        }
+        svg {
+            display: block;
+            background: #fafafa;
+            border-radius: 8px;
+            cursor: grab;
+        }
+        svg:active {
+            cursor: grabbing;
+        }
+        .node {
+            stroke: #fff;
+            stroke-width: 1.5px;
+            transition: r 0.2s;
+        }
+        .link {
+            stroke: #999;
+            stroke-opacity: 0.3; 
+            stroke-width: 1px;
+        }
+        .hint {
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
+    </style>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+
+    <h2>Contrastive Loss 慢动作可视化</h2>
+    <p style="color: #666; margin-top: 0;">现在增加了“围墙”和“阻力”，过程会更平滑</p>
+
+    <div id="controls">
+        <div class="control-group">
+            <label for="numClasses">类别数量</label>
+            <select id="numClasses">
+                <option value="3">3 类</option>
+                <option value="5" selected>5 类</option>
+                <option value="8">8 类</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="repulsionStrength">斥力 (Push / Margin)</label>
+            <input type="range" id="repulsionStrength" min="0" max="500" value="100" step="10">
+            <span class="hint">把不同类推开</span>
+        </div>
+
+        <div class="control-group">
+            <label for="attractionStrength">拉力 (Pull)</label>
+            <input type="range" id="attractionStrength" min="0" max="0.5" value="0.05" step="0.01">
+            <span class="hint">把同类拉近</span>
+        </div>
+        
+        <div class="control-group" style="flex-direction: row; gap: 10px; align-items: flex-end;">
+             <button onclick="initData()" class="reset">重新生成数据</button>
+             <button onclick="perturb()" >扰动一下 (Shake)</button>
+        </div>
+    </div>
+
+    <div id="chart-container">
+        <svg id="chart" width="800" height="600"></svg>
+    </div>
+
+    <script>
+        const svg = d3.select("#chart");
+        const width = +svg.attr("width");
+        const height = +svg.attr("height");
+        const radius = 8; 
+
+        let simulation, nodes, links;
+        const numNodesTotal = 120; // 稍微减少点数，让过程看这更清楚
+
+        const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
+
+        function initData() {
+            const numClasses = +d3.select("#numClasses").property("value");
+            
+            nodes = [];
+            links = [];
+
+            // 1. 初始化位置：这次我们让它们完全随机分布在画布中间
+            for (let i = 0; i < numNodesTotal; i++) {
+                nodes.push({
+                    id: i,
+                    // 初始位置在画布中心的一小块区域，模仿“未训练”状态
+                    x: width / 2 + (Math.random() - 0.5) * 50,
+                    y: height / 2 + (Math.random() - 0.5) * 50,
+                    group: i % numClasses 
+                });
+            }
+
+            // 2. 构建正样本连接
+            nodes.forEach((node1, i) => {
+                const sameGroupNodes = nodes.filter((n, idx) => n.group === node1.group && idx !== i);
+                if (sameGroupNodes.length > 0) {
+                    const numLinks = 2; // 每个点连 2 个同伴
+                    for(let j=0; j < numLinks; j++) {
+                        const targetIndex = Math.floor(Math.random() * sameGroupNodes.length);
+                        const targetNode = sameGroupNodes[targetIndex];
+                        links.push({
+                            source: node1.id,
+                            target: targetNode.id
+                        });
+                    }
+                }
+            });
+
+            restartSimulation();
+        }
+
+        function restartSimulation() {
+            // 清理旧内容
+            svg.selectAll("*").remove();
+            if (simulation) simulation.stop();
+
+            const repulsion = +d3.select("#repulsionStrength").property("value");
+            const attraction = +d3.select("#attractionStrength").property("value");
+
+            // --- 核心改动：增加 friction (velocityDecay) 让运动变慢，像在糖浆里 ---
+            simulation = d3.forceSimulation(nodes)
+                .velocityDecay(0.6) // [重要] 摩擦力 (0-1)，越大越慢，默认是0.4。设为0.6让它稳一点。
+                
+                // 1. 拉力：把同类拉在一起
+                .force("link", d3.forceLink(links)
+                    .id(d => d.id)
+                    .distance(20) 
+                    .strength(attraction) 
+                )
+                
+                // 2. 斥力：把所有点推开 (模拟 Margin)
+                .force("charge", d3.forceManyBody().strength(-repulsion))
+                
+                // 3. [新] 向心引力：防止飞出屏幕，像一个碗把它们托在中间
+                .force("x", d3.forceX(width / 2).strength(0.03))
+                .force("y", d3.forceY(height / 2).strength(0.03))
+                
+                // 4. 碰撞检测：防止重叠
+                .force("collide", d3.forceCollide(radius + 2).strength(1));
+
+            // 绘制连线
+            const link = svg.append("g")
+                .selectAll("line")
+                .data(links)
+                .join("line")
+                .attr("class", "link");
+
+            // 绘制节点
+            const node = svg.append("g")
+                .selectAll("circle")
+                .data(nodes)
+                .join("circle")
+                .attr("class", "node")
+                .attr("r", radius)
+                .attr("fill", d => colorScale(d.group))
+                .call(d3.drag()
+                    .on("start", dragstarted)
+                    .on("drag", dragged)
+                    .on("end", dragended));
+
+            // [重要] 每一帧的更新逻辑
+            simulation.on("tick", () => {
+                
+                // --- 围墙逻辑：强制限制坐标在 [radius, width-radius] 之间 ---
+                nodes.forEach(d => {
+                    d.x = Math.max(radius, Math.min(width - radius, d.x));
+                    d.y = Math.max(radius, Math.min(height - radius, d.y));
+                });
+
+                link
+                    .attr("x1", d => d.source.x)
+                    .attr("y1", d => d.source.y)
+                    .attr("x2", d => d.target.x)
+                    .attr("y2", d => d.target.y);
+
+                node
+                    .attr("cx", d => d.x)
+                    .attr("cy", d => d.y);
+            });
+        }
+
+        // 仅仅更新力的大小，不重置位置
+        function updateForces() {
+            const repulsion = +d3.select("#repulsionStrength").property("value");
+            const attraction = +d3.select("#attractionStrength").property("value");
+
+            simulation.force("charge").strength(-repulsion);
+            simulation.force("link").strength(attraction);
+            
+            // 给模拟加点热度 (alpha)，让它再次动起来
+            simulation.alpha(0.5).restart();
+        }
+
+        // 扰动一下：给所有点一个随机速度，打破平衡
+        function perturb() {
+            simulation.alpha(1).restart();
+        }
+
+        // 监听滑块变化
+        d3.select("#repulsionStrength").on("input", updateForces);
+        d3.select("#attractionStrength").on("input", updateForces);
+        d3.select("#numClasses").on("change", initData);
+
+        // 拖拽逻辑
+        function dragstarted(event) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            event.subject.fx = event.subject.x;
+            event.subject.fy = event.subject.y;
+        }
+
+        function dragged(event) {
+            event.subject.fx = event.x;
+            event.subject.fy = event.y;
+        }
+
+        function dragended(event) {
+            if (!event.active) simulation.alphaTarget(0);
+            event.subject.fx = null;
+            event.subject.fy = null;
+        }
+
+        // 启动
+        initData();
+
+    </script>
+</body>
+</html>
