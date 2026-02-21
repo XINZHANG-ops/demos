@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>SVD 空间变换对比动画</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f7fa;
+            color: #333;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 { font-size: 24px; margin-bottom: 5px; }
+        p { color: #666; margin-bottom: 20px; max-width: 800px; margin-left: auto; margin-right: auto;}
+        .container {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        .canvas-wrapper {
+            background: white;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+        }
+        canvas {
+            background-color: #ffffff;
+            border: 1px solid #eee;
+            border-radius: 8px;
+        }
+        h2 { font-size: 18px; color: #2c3e50; margin-top: 0; }
+        .status {
+            height: 24px;
+            font-weight: bold;
+            color: #3498db;
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 12px 30px;
+            font-size: 16px;
+            background-color: #2ecc71;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            transition: background 0.3s;
+            font-weight: bold;
+        }
+        button:hover { background-color: #27ae60; }
+    </style>
+</head>
+<body>
+
+    <h1>矩阵变换对比：直接变换 vs SVD 拆解</h1>
+    <p>观察红蓝指针与圆形的形状。<strong>左侧</strong>是混合在一起的直接变换，方向和拉伸同时发生，难以拆解；<strong>右侧</strong>是 SVD 极其克制的三步走：只旋转(Vᵀ) → 只沿着坐标轴纯粹拉伸(Σ) → 再次只旋转(U)。</p>
+
+    <div class="container">
+        <div class="canvas-wrapper">
+            <h2>直接变换 (矩阵 A)</h2>
+            <div id="status-direct" class="status">一步到位混合形变</div>
+            <canvas id="canvas-direct" width="300" height="300"></canvas>
+        </div>
+
+        <div class="canvas-wrapper">
+            <h2>SVD 拆解变换 (U Σ Vᵀ)</h2>
+            <div id="status-svd" class="status">准备...</div>
+            <canvas id="canvas-svd" width="300" height="300"></canvas>
+        </div>
+    </div>
+
+    <button onclick="startAnimation()">重新播放动画</button>
+
+    <script>
+        const ctxDirect = document.getElementById('canvas-direct').getContext('2d');
+        const ctxSvd = document.getElementById('canvas-svd').getContext('2d');
+        const statusSvd = document.getElementById('status-svd');
+
+        let animationId;
+        let startTime;
+
+        // 设定 SVD 的目标参数
+        const vAngle = -Math.PI / 4; // V^T 的旋转角度 (-45度)
+        const scaleX = 2.0;          // Σ 的拉伸 (X轴放大2倍)
+        const scaleY = 0.5;          // Σ 的压缩 (Y轴缩小一半)
+        const uAngle = Math.PI / 6;  // U 的旋转角度 (30度)
+
+        // 计算出最终矩阵 A 的四个元素 (用于直接变换的线性插值)
+        // A = U * Sigma * V^T
+        const a11 = Math.cos(uAngle) * scaleX * Math.cos(vAngle) - Math.sin(uAngle) * scaleY * Math.sin(vAngle);
+        const a12 = Math.cos(uAngle) * scaleX * (-Math.sin(vAngle)) - Math.sin(uAngle) * scaleY * Math.cos(vAngle);
+        const a21 = Math.sin(uAngle) * scaleX * Math.cos(vAngle) + Math.cos(uAngle) * scaleY * Math.sin(vAngle);
+        const a22 = Math.sin(uAngle) * scaleX * (-Math.sin(vAngle)) + Math.cos(uAngle) * scaleY * Math.cos(vAngle);
+
+        function drawScene(ctx, transformObj) {
+            ctx.save();
+            ctx.clearRect(0, 0, 300, 300);
+            
+            // 将原点移到画布中心，并适应坐标系 (Y轴向上)
+            ctx.translate(150, 150);
+            ctx.scale(1, -1);
+
+            // 应用传入的变换矩阵
+            ctx.transform(transformObj.m11, transformObj.m21, transformObj.m12, transformObj.m22, 0, 0);
+
+            // 1. 画背景网格 (淡灰色)
+            ctx.strokeStyle = '#ecf0f1';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for(let i = -150; i <= 150; i += 20) {
+                ctx.moveTo(i, -150); ctx.lineTo(i, 150);
+                ctx.moveTo(-150, i); ctx.lineTo(150, i);
+            }
+            ctx.stroke();
+
+            // 2. 画圆/气球表面 (半透明蓝色)
+            ctx.fillStyle = 'rgba(52, 152, 219, 0.2)';
+            ctx.strokeStyle = '#2980b9';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(0, 0, 50, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            // 3. 画基础向量指针 (红X，蓝Y) 极其重要，用于观察旋转
+            ctx.lineWidth = 3;
+            // X轴向量 (红色)
+            ctx.strokeStyle = '#e74c3c';
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(50, 0);
+            ctx.stroke();
+            ctx.fillStyle = '#e74c3c';
+            ctx.beginPath(); ctx.arc(50, 0, 4, 0, Math.PI*2); ctx.fill();
+
+            // Y轴向量 (蓝色)
+            ctx.strokeStyle = '#2980b9';
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(0, 50);
+            ctx.stroke();
+            ctx.fillStyle = '#2980b9';
+            ctx.beginPath(); ctx.arc(0, 50, 4, 0, Math.PI*2); ctx.fill();
+
+            ctx.restore();
+        }
+
+        // 线性插值函数
+        function lerp(start, end, t) {
+            return start + (end - start) * t;
+        }
+
+        function animate(timestamp) {
+            if (!startTime) startTime = timestamp;
+            const elapsed = timestamp - startTime;
+            
+            // 动画总时长 6 秒
+            const totalDuration = 6000;
+            let progress = Math.min(elapsed / totalDuration, 1.0);
+
+            // === 1. 计算左侧：直接变换的矩阵 (从恒等矩阵 I 平滑过渡到 A) ===
+            // easing 函数让动画首尾平滑一点
+            let easeP = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+            
+            const directTransform = {
+                m11: lerp(1, a11, easeP),
+                m12: lerp(0, a12, easeP),
+                m21: lerp(0, a21, easeP),
+                m22: lerp(1, a22, easeP)
+            };
+            drawScene(ctxDirect, directTransform);
+
+            // === 2. 计算右侧：SVD 三步走的矩阵 ===
+            // 将 6 秒分为三个阶段，每段 2 秒
+            let currentVAngle = 0;
+            let currentScaleX = 1;
+            let currentScaleY = 1;
+            let currentUAngle = 0;
+
+            if (progress < 0.333) {
+                // 第一阶段：执行 V^T (找准受力方向)
+                let p = progress / 0.333;
+                let ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+                currentVAngle = lerp(0, vAngle, ease);
+                statusSvd.innerText = "第一步 Vᵀ：找准受力角度 (纯旋转)";
+                statusSvd.style.color = "#8e44ad";
+            } else if (progress < 0.666) {
+                // 第二阶段：执行 Σ (纯粹拉伸)
+                currentVAngle = vAngle;
+                let p = (progress - 0.333) / 0.333;
+                let ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+                currentScaleX = lerp(1, scaleX, ease);
+                currentScaleY = lerp(1, scaleY, ease);
+                statusSvd.innerText = "第二步 Σ：沿轴正向冲压变形 (纯拉伸)";
+                statusSvd.style.color = "#e67e22";
+            } else {
+                // 第三阶段：执行 U (摆放到最终姿态)
+                currentVAngle = vAngle;
+                currentScaleX = scaleX;
+                currentScaleY = scaleY;
+                let p = (progress - 0.666) / 0.334;
+                let ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+                currentUAngle = lerp(0, uAngle, ease);
+                statusSvd.innerText = "第三步 U：摆放到位 (纯旋转)";
+                statusSvd.style.color = "#16a085";
+            }
+
+            if (progress === 1.0) {
+                statusSvd.innerText = "变换完成！左右结果完全一致。";
+                statusSvd.style.color = "#333";
+            }
+
+            // 根据三个阶段的当前参数，计算当前的累计矩阵
+            const cU = Math.cos(currentUAngle), sU = Math.sin(currentUAngle);
+            const cV = Math.cos(currentVAngle), sV = Math.sin(currentVAngle);
+            
+            const svdTransform = {
+                m11: cU * currentScaleX * cV - sU * currentScaleY * sV,
+                m12: cU * currentScaleX * (-sV) - sU * currentScaleY * cV,
+                m21: sU * currentScaleX * cV + cU * currentScaleY * sV,
+                m22: sU * currentScaleX * (-sV) + cU * currentScaleY * cV
+            };
+            drawScene(ctxSvd, svdTransform);
+
+            // 循环调用
+            if (progress < 1.0) {
+                animationId = requestAnimationFrame(animate);
+            }
+        }
+
+        function startAnimation() {
+            if (animationId) cancelAnimationFrame(animationId);
+            startTime = null;
+            statusSvd.innerText = "准备...";
+            statusSvd.style.color = "#3498db";
+            animationId = requestAnimationFrame(animate);
+        }
+
+        // 初始画一次静态画面
+        drawScene(ctxDirect, {m11: 1, m12: 0, m21: 0, m22: 1});
+        drawScene(ctxSvd, {m11: 1, m12: 0, m21: 0, m22: 1});
+        
+        // 延迟半秒自动开始
+        setTimeout(startAnimation, 500);
+    </script>
+</body>
+</html>
