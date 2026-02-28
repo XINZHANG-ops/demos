@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>PCA 后直接做 PQ 的灾难：方差极度不均衡</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background-color: #f7f9fc; margin: 0; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h2 { text-align: center; color: #333; margin-bottom: 5px; }
+        p { text-align: center; color: #666; font-size: 15px; margin-bottom: 20px; }
+        #plot { width: 100%; height: 500px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>为什么不能直接按顺序切分 PCA 后的数据？</h2>
+    <p>假设我们有一个 4 维数据，PCA 后得到 4 个完全独立的主成分 (PC1 ~ PC4)。PQ 平均分配 16 个聚类中心（4 bits）给每个子空间。</p>
+    <div id="plot"></div>
+</div>
+
+<script>
+    // 1. Box-Muller 算法生成正态分布数据
+    function randomNormal(mean, stdDev) {
+        let u1 = 1 - Math.random();
+        let u2 = 1 - Math.random();
+        let z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+        return z0 * stdDev + mean;
+    }
+
+    const numPoints = 800;
+    
+    // 假设 PCA 后的 4 个主成分，方差（标准差的平方）呈现断崖式递减
+    // PC1 std=10 (方差100), PC2 std=8 (方差64)
+    // PC3 std=1.5 (方差2.25), PC4 std=1 (方差1)
+    const pc1 = Array.from({length: numPoints}, () => randomNormal(0, 10));
+    const pc2 = Array.from({length: numPoints}, () => randomNormal(0, 8));
+    const pc3 = Array.from({length: numPoints}, () => randomNormal(0, 1.5));
+    const pc4 = Array.from({length: numPoints}, () => randomNormal(0, 1));
+
+    // 2. 构造图表 1：方差条形图
+    const traceBar = {
+        x: ['PC1 (第1维)', 'PC2 (第2维)', 'PC3 (第3维)', 'PC4 (第4维)'],
+        y: [100, 64, 2.25, 1],
+        type: 'bar',
+        marker: { color: ['#e74c3c', '#e74c3c', '#3498db', '#3498db'] },
+        xaxis: 'x1', yaxis: 'y1',
+        name: '特征值 (方差)'
+    };
+
+    // 3. 构造图表 2：子空间 A (排在前面的维度 PC1 & PC2)
+    const traceSubspaceA = {
+        x: pc1, y: pc2,
+        mode: 'markers', type: 'scatter',
+        marker: { color: 'rgba(231, 76, 60, 0.3)', size: 4 },
+        xaxis: 'x2', yaxis: 'y2',
+        name: '数据分布'
+    };
+
+    // 生成子空间 A 的 16 个聚类中心 (大致覆盖 -15 到 15)
+    const centersA_1D = [-12, -4, 4, 12];
+    const gridAx = [], gridAy = [];
+    for(let x of centersA_1D) { for(let y of centersA_1D) { gridAx.push(x); gridAy.push(y); } }
+    
+    const traceGridA = {
+        x: gridAx, y: gridAy,
+        mode: 'markers', type: 'scatter',
+        marker: { color: '#c0392b', size: 10, symbol: 'x', line: {width: 2} },
+        xaxis: 'x2', yaxis: 'y2',
+        name: '聚类中心 (16个)'
+    };
+
+    // 4. 构造图表 3：子空间 B (排在后面的维度 PC3 & PC4)
+    const traceSubspaceB = {
+        x: pc3, y: pc4,
+        mode: 'markers', type: 'scatter',
+        marker: { color: 'rgba(52, 152, 219, 0.4)', size: 4 },
+        xaxis: 'x3', yaxis: 'y3',
+        name: '数据分布'
+    };
+
+    // 生成子空间 B 的 16 个聚类中心 (大致覆盖 -2 到 2)
+    const centersB_1D = [-1.5, -0.5, 0.5, 1.5];
+    const gridBx = [], gridBy = [];
+    for(let x of centersB_1D) { for(let y of centersB_1D) { gridBx.push(x); gridBy.push(y); } }
+
+    const traceGridB = {
+        x: gridBx, y: gridBy,
+        mode: 'markers', type: 'scatter',
+        marker: { color: '#2980b9', size: 10, symbol: 'x', line: {width: 2} },
+        xaxis: 'x3', yaxis: 'y3',
+        name: '聚类中心 (16个)'
+    };
+
+    // 5. 布局配置
+    const layout = {
+        grid: {rows: 1, columns: 3, pattern: 'independent'},
+        showlegend: false,
+        margin: { t: 80 },
+        // 图1：方差条形图
+        xaxis1: { title: 'PCA 后的新维度' },
+        yaxis1: { title: '方差大小 (信息量)' },
+        // 图2：子空间 A (注意这里强行固定了 -25 到 25 的坐标轴范围)
+        xaxis2: { title: 'PC1 (第一主成分)', range: [-25, 25], gridcolor: '#eee' },
+        yaxis2: { title: 'PC2 (第二主成分)', range: [-25, 25], gridcolor: '#eee' },
+        // 图3：子空间 B (同样的 -25 到 25 的坐标轴范围，以示对比)
+        xaxis3: { title: 'PC3 (第三主成分)', range: [-25, 25], gridcolor: '#eee' },
+        yaxis3: { title: 'PC4 (第四主成分)', range: [-25, 25], gridcolor: '#eee' },
+        annotations: [
+            { text: '1. PCA 特征值呈断崖式下降', x: 0.1, y: 1.05, xref: 'paper', yref: 'paper', xanchor: 'center', yanchor: 'bottom', showarrow: false, font: {size: 14, color: '#333'} },
+            { text: '2. 子空间A (前排维度)：<br>方差巨大，聚类中心稀疏，误差爆炸', x: 0.5, y: 1.05, xref: 'paper', yref: 'paper', xanchor: 'center', yanchor: 'bottom', showarrow: false, font: {size: 14, color: '#e74c3c'} },
+            { text: '3. 子空间B (后排维度)：<br>挤成一点，浪费16个聚类中心算力', x: 0.9, y: 1.05, xref: 'paper', yref: 'paper', xanchor: 'center', yanchor: 'bottom', showarrow: false, font: {size: 14, color: '#3498db'} }
+        ]
+    };
+
+    Plotly.newPlot('plot', [traceBar, traceSubspaceA, traceGridA, traceSubspaceB, traceGridB], layout);
+</script>
+
+</body>
+</html>

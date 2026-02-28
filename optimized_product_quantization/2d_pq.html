@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>PQ 量化网格：有效中心 vs 闲置鬼城</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { font-family: sans-serif; background-color: #f7f9fc; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h2 { text-align: center; color: #333; margin-bottom: 5px; }
+        p { text-align: center; color: #666; font-size: 14px; margin-bottom: 20px; }
+        #plot { width: 100%; height: 600px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>PQ 笛卡尔积网格演示 (红色X = 有效，灰色O = 闲置鬼城)</h2>
+    <p>左图：数据完美不相关 (均匀分布) | 右图：数据完美相关 (对角线 x=y)</p>
+    <div id="plot"></div>
+</div>
+
+<script>
+    // 1. 生成数据
+    const numPoints = 1000;
+    const uncorrX = Array.from({length: numPoints}, () => Math.random() * 10);
+    const uncorrY = Array.from({length: numPoints}, () => Math.random() * 10);
+    
+    const corrX = Array.from({length: numPoints}, () => Math.random() * 10);
+    const corrY = [...corrX]; 
+
+    // 2. PQ 的 K-Means 切分
+    const centroids1D = [1.25, 3.75, 6.25, 8.75];
+    const gridX = [];
+    const gridY = [];
+    for (let x of centroids1D) {
+        for (let y of centroids1D) {
+            gridX.push(x);
+            gridY.push(y);
+        }
+    }
+
+    // 3. 核心逻辑：找出被分配了数据点的“有效中心”和没有数据点的“闲置中心”
+    function classifyCentroids(dataX, dataY, gX, gY) {
+        let activeIndices = new Set();
+        for(let i = 0; i < dataX.length; i++) {
+            let minDist = Infinity;
+            let minIdx = -1;
+            for(let j = 0; j < gX.length; j++) {
+                let dist = Math.pow(dataX[i] - gX[j], 2) + Math.pow(dataY[i] - gY[j], 2);
+                if(dist < minDist) {
+                    minDist = dist;
+                    minIdx = j;
+                }
+            }
+            activeIndices.add(minIdx);
+        }
+        
+        let active = {x: [], y: []};
+        let inactive = {x: [], y: []};
+        
+        for(let j = 0; j < gX.length; j++) {
+            if(activeIndices.has(j)) {
+                active.x.push(gX[j]); active.y.push(gY[j]);
+            } else {
+                inactive.x.push(gX[j]); inactive.y.push(gY[j]);
+            }
+        }
+        return {active, inactive};
+    }
+
+    const uncorrGrid = classifyCentroids(uncorrX, uncorrY, gridX, gridY);
+    const corrGrid = classifyCentroids(corrX, corrY, gridX, gridY);
+
+    // 4. 绘图配置 (数据点)
+    const traceUncorrData = { x: uncorrX, y: uncorrY, mode: 'markers', type: 'scatter', name: '不相关数据', marker: { color: 'rgba(52, 152, 219, 0.4)', size: 5 }, xaxis: 'x1', yaxis: 'y1' };
+    const traceCorrData = { x: corrX, y: corrY, mode: 'markers', type: 'scatter', name: '高度相关数据', marker: { color: 'rgba(155, 89, 182, 0.4)', size: 5 }, xaxis: 'x2', yaxis: 'y2' };
+
+    // 5. 绘图配置 (聚类中心)
+    const markerActive = { color: '#e74c3c', size: 12, symbol: 'x', line: {width: 2} };
+    const markerInactive = { color: '#95a5a6', size: 12, symbol: 'circle-open', line: {width: 2} };
+
+    const traceUncorrActive = { x: uncorrGrid.active.x, y: uncorrGrid.active.y, mode: 'markers', type: 'scatter', name: '有效中心', marker: markerActive, xaxis: 'x1', yaxis: 'y1' };
+    const traceUncorrInactive = { x: uncorrGrid.inactive.x, y: uncorrGrid.inactive.y, mode: 'markers', type: 'scatter', name: '闲置鬼城', marker: markerInactive, xaxis: 'x1', yaxis: 'y1' };
+
+    const traceCorrActive = { x: corrGrid.active.x, y: corrGrid.active.y, mode: 'markers', type: 'scatter', name: '有效中心', marker: markerActive, xaxis: 'x2', yaxis: 'y2' };
+    const traceCorrInactive = { x: corrGrid.inactive.x, y: corrGrid.inactive.y, mode: 'markers', type: 'scatter', name: '闲置鬼城', marker: markerInactive, xaxis: 'x2', yaxis: 'y2' };
+
+    // 6. 彻底修复布局重叠：绑定到子图坐标轴
+        const layout = {
+            grid: {rows: 1, columns: 2, pattern: 'independent'},
+            showlegend: false,
+            hovermode: 'closest',
+            margin: { t: 80 }, 
+            xaxis1: {title: 'X 维度 (独立切分)', range: [0, 10], dtick: 2.5, gridcolor: '#eee'},
+            yaxis1: {title: 'Y 维度 (独立切分)', range: [0, 10], dtick: 2.5, gridcolor: '#eee', scaleanchor: 'x1'},
+            xaxis2: {title: 'X 维度 (独立切分)', range: [0, 10], dtick: 2.5, gridcolor: '#eee'},
+            yaxis2: {title: 'Y 维度 (独立切分)', range: [0, 10], dtick: 2.5, gridcolor: '#eee', scaleanchor: 'x2'},
+            annotations: [
+                { 
+                    text: `场景A：全员干活 (${uncorrGrid.active.x.length}有效, ${uncorrGrid.inactive.x.length}鬼城)`, 
+                    x: 5, // 绑定在左图 0-10 的正中间
+                    y: 1.05, 
+                    xref: 'x1', yref: 'paper', 
+                    xanchor: 'center', yanchor: 'bottom', 
+                    showarrow: false, font: {size: 15, color: '#333'} 
+                },
+                { 
+                    text: `场景B：算力极大浪费 (${corrGrid.active.x.length}有效, ${corrGrid.inactive.x.length}鬼城)`, 
+                    x: 5, // 绑定在右图 0-10 的正中间
+                    y: 1.05, 
+                    xref: 'x2', yref: 'paper', 
+                    xanchor: 'center', yanchor: 'bottom', 
+                    showarrow: false, font: {size: 15, color: '#e74c3c'} 
+                }
+            ]
+        };
+
+    Plotly.newPlot('plot', [traceUncorrData, traceUncorrActive, traceUncorrInactive, traceCorrData, traceCorrActive, traceCorrInactive], layout);
+</script>
+
+</body>
+</html>

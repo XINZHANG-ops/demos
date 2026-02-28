@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OPQ 动画讲解：一眼看懂“先旋转再PQ”</title>
+  <style>
+    :root{
+      --bg:#0b0f14; --panel:#121826; --text:#e6edf3; --muted:#9aa4b2;
+      --line:rgba(255,255,255,.10);
+      --blue:#7aa2ff; --gray:rgba(230,237,243,.65);
+      --orange:#ffa657; --green:#7ee787; --red:#ff7b72;
+      --hl: rgba(122,162,255,.18);
+    }
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
+      font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    .wrap{max-width:1180px;margin:16px auto;padding:0 14px;display:grid;grid-template-columns:1fr 380px;gap:14px}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.35)}
+    .topbar{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+    .title{font-size:14px;font-weight:800}
+    .subtitle{font-size:12px;color:var(--muted);line-height:1.45}
+    canvas{width:100%;height:690px;display:block;background:
+      radial-gradient(1200px 800px at 30% 20%, rgba(122,162,255,.08), transparent 60%),
+      radial-gradient(900px 600px at 80% 70%, rgba(126,231,135,.06), transparent 55%)}
+    .side{padding:12px 14px;display:flex;flex-direction:column;gap:12px}
+    .row{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center}
+    label{font-size:12px;color:var(--muted)}
+    input[type=range]{width:100%}
+    button{
+      background:rgba(255,255,255,.06);
+      border:1px solid var(--line);
+      color:var(--text);
+      padding:8px 10px;
+      border-radius:10px;
+      cursor:pointer;
+      font-size:12px
+    }
+    button:hover{border-color:rgba(255,255,255,.22)}
+    .btns{display:flex;gap:8px;flex-wrap:wrap}
+    .metric{padding:10px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.03)}
+    .metric .k{font-size:12px;color:var(--muted)}
+    .metric .v{font-size:18px;font-weight:900;margin-top:2px;font-family:ui-monospace,Menlo,Consolas,monospace}
+    .hlbox{border:1px solid rgba(122,162,255,.35);background:var(--hl);border-radius:12px;padding:10px}
+    .hlbox .h{font-weight:900;font-size:12px}
+    .hlbox .p{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.55}
+    .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+    .chip{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+    .dot{width:10px;height:10px;border-radius:999px}
+    .dot.gray{background:var(--gray)}
+    .dot.blue{background:var(--blue)}
+    .dot.orange{background:var(--orange)}
+    .dot.green{background:var(--green)}
+    .dot.red{background:var(--red)}
+    .hr{height:1px;background:var(--line);margin:6px 0}
+    .smallgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .box{padding:10px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.03)}
+    .box .t{font-size:12px;color:var(--muted)}
+    .box .b{margin-top:6px;font-size:12px;line-height:1.55}
+    .kbd{display:inline-block;padding:0 6px;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.25);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px}
+    @media (max-width:1020px){.wrap{grid-template-columns:1fr} canvas{height:540px}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="topbar">
+      <div>
+        <div class="title">OPQ 动画讲解（二维版）：看懂“先旋转，再按块量化，再查表相加”</div>
+        <div class="subtitle">二维里只有 2 块（x/y），完全对应你文章里 8 块：总距离 = 分块距离之和。这里用动画让你看到：旋转改变“按块相加”的合理性。</div>
+      </div>
+      <div class="subtitle mono" id="status">Tour: 0/4</div>
+    </div>
+    <canvas id="c"></canvas>
+  </div>
+
+  <div class="card">
+    <div class="topbar">
+      <div class="title">控制与讲解</div>
+      <div class="subtitle">跟着“下一步”走就行</div>
+    </div>
+    <div class="side">
+      <div class="hlbox" id="hint">
+        <div class="h">点击“开始讲解”</div>
+        <div class="p">我会自动播放：先展示 θ=0°（普通 PQ），再旋转到最优 θ（OPQ-like），并用聚光灯盯住一个点，看它的误差怎么变短。</div>
+      </div>
+
+      <div class="btns">
+        <button id="start">开始讲解</button>
+        <button id="next">下一步</button>
+        <button id="play">自动播放</button>
+        <button id="pause">暂停</button>
+      </div>
+
+      <div class="row">
+        <label>角度 θ（手动）</label>
+        <input id="theta" type="range" min="-90" max="90" step="0.1" value="0" />
+      </div>
+      <div class="row">
+        <label>量化粗细</label>
+        <input id="step" type="range" min="6" max="60" step="1" value="22" />
+      </div>
+      <div class="row">
+        <label>点数 N</label>
+        <input id="n" type="range" min="200" max="2400" step="50" value="900" />
+      </div>
+      <div class="row">
+        <label>倾斜强度（相关）</label>
+        <input id="corr" type="range" min="0" max="0.95" step="0.01" value="0.82" />
+      </div>
+
+      <div class="btns">
+        <button id="regen">重新采样</button>
+        <button id="best">计算最优 θ</button>
+        <button id="toggleGrid">显示/隐藏网格</button>
+        <button id="toggleAxes">显示/隐藏轴</button>
+      </div>
+
+      <div class="metric">
+        <div class="k">总量化误差（越小越好）</div>
+        <div class="v" id="err">-</div>
+        <div class="subtitle" style="margin-top:6px">
+          二维对应你文章：<span class="mono">err = Σ (dx² + dy²)</span>（128D 就是 8 块/16维各自距离相加）
+        </div>
+      </div>
+
+      <div class="smallgrid">
+        <div class="box">
+          <div class="t">聚光灯点：分块距离（对应 8 块相加）</div>
+          <div class="b mono" id="decomp">
+            x块: -<br/>y块: -<br/>合计: -
+          </div>
+        </div>
+        <div class="box">
+          <div class="t">你该盯着看什么</div>
+          <div class="b">
+            1) 聚光灯圈住的点<br/>
+            2) 它的橙色误差线是否变短<br/>
+            3) 上方总误差数字是否下降
+          </div>
+        </div>
+      </div>
+
+      <div class="hr"></div>
+
+      <div class="chip"><span class="dot gray"></span>灰：原始点</div>
+      <div class="chip"><span class="dot blue"></span>蓝：量化点（被吸附到“轴对齐分块码本”）</div>
+      <div class="chip"><span class="dot orange"></span>橙：误差线（原始→量化）</div>
+      <div class="chip"><span class="dot green"></span>绿：当前旋转后的坐标轴（OPQ 的基底）</div>
+      <div class="chip"><span class="dot red"></span>红圈：聚光灯点（只盯它就够）</div>
+
+      <div class="hr"></div>
+      <div class="subtitle">
+        快捷键：<span class="kbd">Space</span> 播放/暂停，<span class="kbd">→</span> 下一步
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  const elTheta = document.getElementById('theta');
+  const elStep = document.getElementById('step');
+  const elN = document.getElementById('n');
+  const elCorr = document.getElementById('corr');
+  const elErr = document.getElementById('err');
+  const elStatus = document.getElementById('status');
+  const elHint = document.getElementById('hint');
+  const elDecomp = document.getElementById('decomp');
+
+  const btnStart = document.getElementById('start');
+  const btnNext = document.getElementById('next');
+  const btnPlay = document.getElementById('play');
+  const btnPause = document.getElementById('pause');
+
+  const btnRegen = document.getElementById('regen');
+  const btnBest = document.getElementById('best');
+  const btnToggleGrid = document.getElementById('toggleGrid');
+  const btnToggleAxes = document.getElementById('toggleAxes');
+
+  let showGrid = true;
+  let showAxes = true;
+
+  // ====== canvas resize ======
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.floor(rect.width * dpr);
+    canvas.height = Math.floor(rect.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', () => { resize(); draw(); });
+
+  // ====== random gaussian ======
+  function randn() {
+    let u=0, v=0;
+    while (u===0) u=Math.random();
+    while (v===0) v=Math.random();
+    return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+  }
+
+  // correlated cloud
+  function samplePoints(N, corr) {
+    const pts=[];
+    const sx=1.9, sy=0.70;
+    const a=sx;
+    const b=corr*sy;
+    const c=sy*Math.sqrt(1-corr*corr);
+    for (let i=0;i<N;i++){
+      const z1=randn(), z2=randn();
+      const x=a*z1;
+      const y=b*z1 + c*z2;
+      const twist = 0.14*Math.sin(1.5*x);
+      pts.push({x, y:y+twist});
+    }
+    return pts;
+  }
+
+  // rotations
+  function rot(p, t) {
+    const ct=Math.cos(t), st=Math.sin(t);
+    return {x: ct*p.x - st*p.y, y: st*p.x + ct*p.y};
+  }
+  function rotInv(p, t) {
+    const ct=Math.cos(t), st=Math.sin(t);
+    return {x: ct*p.x + st*p.y, y: -st*p.x + ct*p.y};
+  }
+
+  // quantize per axis (visual proxy for per-subspace codebook selection)
+  function quant(u, step) { return Math.round(u/step)*step; }
+  function stepToWorld(slider) { return slider/50; }
+
+  // view mapping
+  function makeView(pts) {
+    let minx=Infinity,maxx=-Infinity,miny=Infinity,maxy=-Infinity;
+    for (const p of pts){
+      minx=Math.min(minx,p.x); maxx=Math.max(maxx,p.x);
+      miny=Math.min(miny,p.y); maxy=Math.max(maxy,p.y);
+    }
+    const pad=1.22;
+    const cx=(minx+maxx)/2, cy=(miny+maxy)/2;
+    const w=(maxx-minx)*pad, h=(maxy-miny)*pad;
+    const rect = canvas.getBoundingClientRect();
+    const W=rect.width, H=rect.height;
+    const scale = 0.46*Math.min(W/w, H/h);
+    const ox = W/2 - cx*scale;
+    const oy = H/2 + cy*scale;
+    return {
+      toScreen(p){ return {x: ox+p.x*scale, y: oy-p.y*scale}; },
+      scale,
+      origin:{x:ox,y:oy}
+    };
+  }
+
+  // drawing helpers
+  function line(a,b,rgba,w=1){
+    ctx.strokeStyle=rgba; ctx.lineWidth=w;
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+  }
+  function dot(p,r,rgba){
+    ctx.fillStyle=rgba; ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fill();
+  }
+  function circle(p,r,rgba,w=2){
+    ctx.strokeStyle=rgba; ctx.lineWidth=w;
+    ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.stroke();
+  }
+  function text(str,x,y,rgba,size=12,align='left'){
+    ctx.fillStyle=rgba;
+    ctx.font=`${size}px ui-monospace, Menlo, Consolas, monospace`;
+    ctx.textAlign=align;
+    ctx.fillText(str,x,y);
+  }
+  function fmt(x){
+    if (!isFinite(x)) return '-';
+    if (x>=1e5) return x.toExponential(3);
+    return x.toFixed(2);
+  }
+
+  // ====== state ======
+  let points = [];
+  let focusIndex = 0;
+
+  function regen(){
+    points = samplePoints(Number(elN.value), Number(elCorr.value));
+    // choose a stable focus point: pick one far from center to make error obvious
+    let best=-1, idx=0;
+    for (let i=0;i<points.length;i++){
+      const p=points[i];
+      const r=p.x*p.x + p.y*p.y;
+      if (r>best){best=r; idx=i;}
+    }
+    focusIndex = idx;
+    cachedBestTheta = null;
+    draw();
+  }
+
+  function compute(thetaRad, stepWorld){
+    const qpts=[];
+    let err=0;
+    for (const p of points){
+      const pr = rot(p, thetaRad);
+      const qr = {x: quant(pr.x, stepWorld), y: quant(pr.y, stepWorld)};
+      const pq = rotInv(qr, thetaRad);
+      const dx=p.x-pq.x, dy=p.y-pq.y;
+      err += dx*dx + dy*dy;
+      qpts.push({p, pq, pr, qr, dx, dy});
+    }
+    return {qpts, err};
+  }
+
+  function drawAxes(view, thetaRad){
+    const rect=canvas.getBoundingClientRect();
+    const W=rect.width, H=rect.height;
+    const c={x:W/2,y:H/2};
+    const ex=rot({x:1,y:0}, thetaRad);
+    const ey=rot({x:0,y:1}, thetaRad);
+    const L=3.1*view.scale;
+    const xEnd={x:c.x+ex.x*L, y:c.y-ex.y*L};
+    const yEnd={x:c.x+ey.x*L, y:c.y-ey.y*L};
+    line(c,xEnd,'rgba(126,231,135,0.90)',2);
+    line(c,yEnd,'rgba(126,231,135,0.90)',2);
+    text("x'", xEnd.x+6, xEnd.y+4, 'rgba(126,231,135,0.95)', 12);
+    text("y'", yEnd.x+6, yEnd.y+4, 'rgba(126,231,135,0.95)', 12);
+  }
+
+  function drawGrid(view, thetaRad, stepWorld){
+    if (!showGrid) return;
+
+    const rect=canvas.getBoundingClientRect();
+    const W=rect.width, H=rect.height;
+
+    const inv = (s)=>({
+      x:(s.x-view.origin.x)/view.scale,
+      y:(view.origin.y-s.y)/view.scale
+    });
+
+    const corners=[{x:0,y:0},{x:W,y:0},{x:W,y:H},{x:0,y:H}];
+    let minxr=Infinity,maxxr=-Infinity,minyr=Infinity,maxyr=-Infinity;
+    for (const cs of corners){
+      const w=inv(cs);
+      const r=rot(w, thetaRad);
+      minxr=Math.min(minxr,r.x); maxxr=Math.max(maxxr,r.x);
+      minyr=Math.min(minyr,r.y); maxyr=Math.max(maxyr,r.y);
+    }
+    const pad=1.0;
+    minxr-=pad; maxxr+=pad; minyr-=pad; maxyr+=pad;
+
+    const gx0=Math.floor(minxr/stepWorld)*stepWorld;
+    const gx1=Math.ceil(maxxr/stepWorld)*stepWorld;
+    const gy0=Math.floor(minyr/stepWorld)*stepWorld;
+    const gy1=Math.ceil(maxyr/stepWorld)*stepWorld;
+
+    for (let x=gx0;x<=gx1;x+=stepWorld){
+      const aW=rotInv({x,y:gy0}, thetaRad);
+      const bW=rotInv({x,y:gy1}, thetaRad);
+      const aS=view.toScreen(aW), bS=view.toScreen(bW);
+      const alpha = (Math.abs(x)<1e-6)?0.22:0.08;
+      line(aS,bS,`rgba(255,255,255,${alpha})`,1);
+    }
+    for (let y=gy0;y<=gy1;y+=stepWorld){
+      const aW=rotInv({x:gx0,y}, thetaRad);
+      const bW=rotInv({x:gx1,y}, thetaRad);
+      const aS=view.toScreen(aW), bS=view.toScreen(bW);
+      const alpha = (Math.abs(y)<1e-6)?0.22:0.08;
+      line(aS,bS,`rgba(255,255,255,${alpha})`,1);
+    }
+  }
+
+  // ====== render ======
+  function draw(){
+    resize();
+
+    const thetaDeg = Number(elTheta.value);
+    const thetaRad = thetaDeg*Math.PI/180;
+    const stepWorld = stepToWorld(Number(elStep.value));
+
+    const {qpts, err} = compute(thetaRad, stepWorld);
+
+    const all=[];
+    for (const t of qpts){ all.push(t.p); all.push(t.pq); }
+    const view = makeView(all);
+
+    const rect=canvas.getBoundingClientRect();
+    ctx.clearRect(0,0,rect.width,rect.height);
+
+    drawGrid(view, thetaRad, stepWorld);
+
+    // draw error lines for all (light)
+    for (const t of qpts){
+      line(view.toScreen(t.p), view.toScreen(t.pq), 'rgba(255,166,87,0.16)', 1);
+    }
+
+    // points
+    for (const t of qpts) dot(view.toScreen(t.p), 2.0, 'rgba(230,237,243,0.50)');
+    for (const t of qpts) dot(view.toScreen(t.pq), 2.1, 'rgba(122,162,255,0.72)');
+
+    // focus point highlight
+    const f = qpts[focusIndex];
+    const fp = view.toScreen(f.p);
+    const fq = view.toScreen(f.pq);
+    line(fp, fq, 'rgba(255,166,87,0.85)', 2.2);     // strong error line
+    circle(fp, 10, 'rgba(255,123,114,0.90)', 2.5);  // red spotlight
+    circle(fp, 20, 'rgba(255,123,114,0.22)', 2.0);
+    dot(fp, 3.0, 'rgba(255,123,114,0.95)');
+    dot(fq, 3.0, 'rgba(122,162,255,0.95)');
+
+    if (showAxes) drawAxes(view, thetaRad);
+
+    // HUD
+    text(`θ=${thetaDeg.toFixed(1)}°`, 14, 22, 'rgba(230,237,243,0.90)', 12);
+    text(`step=${stepWorld.toFixed(3)}`, 14, 40, 'rgba(154,164,178,0.92)', 12);
+    text(`focus idx=${focusIndex}`, 14, 58, 'rgba(154,164,178,0.92)', 12);
+
+    elErr.textContent = fmt(err);
+
+    // decomposition for focus point (2 blocks)
+    // In rotated space: error decomposes into (x')^2 + (y')^2 if you measure there.
+    // Here we show in original space just for intuition: dx^2 and dy^2 still sums.
+    const dx2 = f.dx*f.dx;
+    const dy2 = f.dy*f.dy;
+    elDecomp.innerHTML =
+      `x块: ${fmt(dx2)}<br/>y块: ${fmt(dy2)}<br/>合计: ${fmt(dx2+dy2)}`;
+  }
+
+  // ====== best theta search ======
+  let cachedBestTheta = null;
+  function computeBestTheta(){
+    const stepWorld = stepToWorld(Number(elStep.value));
+    let best={theta:0, err:Infinity};
+
+    for (let deg=-90; deg<=90; deg+=1.0){
+      const {err} = compute(deg*Math.PI/180, stepWorld);
+      if (err<best.err) best={theta:deg, err};
+    }
+    // refine
+    const center=best.theta;
+    for (let deg=center-2; deg<=center+2; deg+=0.1){
+      const {err} = compute(deg*Math.PI/180, stepWorld);
+      if (err<best.err) best={theta:deg, err};
+    }
+    cachedBestTheta = best.theta;
+    return best.theta;
+  }
+
+  // ====== animation helper ======
+  let animId = 0;
+  function animateThetaTo(targetDeg, ms=900){
+    const startDeg = Number(elTheta.value);
+    const start = performance.now();
+    const id = ++animId;
+
+    function ease(t){ return 1 - Math.pow(1-t, 3); } // cubic out
+    function tick(now){
+      if (id !== animId) return;
+      const p = Math.min(1, (now-start)/ms);
+      const v = startDeg + (targetDeg-startDeg)*ease(p);
+      elTheta.value = String(v);
+      draw();
+      if (p<1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  // ====== Tour steps (real guided animation) ======
+  let tourStep = 0;
+  let playing = false;
+  let playTimer = null;
+
+  function setHint(title, body){
+    elHint.innerHTML = `<div class="h">${title}</div><div class="p">${body}</div>`;
+  }
+
+  function applyTourStep(step){
+    tourStep = step;
+    elStatus.textContent = `Tour: ${step}/4`;
+
+    if (step === 1){
+      showGrid = false; showAxes = false;
+      setHint(
+        "Step 1：先看普通 PQ（θ=0°）的误差",
+        "现在只盯红圈那个点：橙色误差线很长，说明“按 x/y 两块独立量化再相加”的结构在这个坐标系里不太合适。<br/>接下来我们会去找一个更合适的旋转角。"
+      );
+      animateThetaTo(0, 650);
+    }
+
+    if (step === 2){
+      showGrid = false; showAxes = false;
+      const best = (cachedBestTheta ?? computeBestTheta());
+      setHint(
+        "Step 2：自动旋转到最优角（OPQ-like）",
+        `我把坐标系旋转到 θ≈${best.toFixed(1)}°。只盯红圈点：它的橙色误差线会明显变短，同时右侧“总量化误差”也会下降。`
+      );
+      animateThetaTo(best, 900);
+    }
+
+    if (step === 3){
+      showGrid = true; showAxes = true;
+      setHint(
+        "Step 3：你现在看到的“网格”就是 PQ 的结构约束（轴对齐分块）",
+        "网格表示：每个轴（每块）独立选一个代表值，然后拼起来（笛卡尔积结构）。OPQ 做的不是让“块本身更正交”（它们一直正交），而是旋转到一个角度，让数据更贴合这种网格结构，所以误差更小。"
+      );
+      draw();
+    }
+
+    if (step === 4){
+      showGrid = true; showAxes = true;
+      setHint(
+        "Step 4：来回摆动对比（你会立刻形成直觉）",
+        "我会在 θ=0° 和 θ=最优之间来回切换几次：你只看红圈点的误差线长短 + 总误差数字。你会得到一个非常牢的直觉：旋转是在帮 PQ 的“按块相加”结构减少跨块耦合带来的误差。"
+      );
+      // bounce a few times
+      const best = (cachedBestTheta ?? computeBestTheta());
+      animateThetaTo(0, 500);
+      setTimeout(()=>animateThetaTo(best, 650), 650);
+      setTimeout(()=>animateThetaTo(0, 650), 1500);
+      setTimeout(()=>animateThetaTo(best, 650), 2350);
+    }
+
+    draw();
+  }
+
+  function nextStep(){
+    const s = Math.min(4, tourStep+1);
+    applyTourStep(s);
+  }
+
+  function startTour(){
+    cachedBestTheta = null;
+    applyTourStep(1);
+  }
+
+  function setPlaying(on){
+    playing = on;
+    if (playTimer) { clearInterval(playTimer); playTimer = null; }
+    if (on){
+      playTimer = setInterval(() => {
+        if (tourStep >= 4) { setPlaying(false); return; }
+        nextStep();
+      }, 2600);
+    }
+  }
+
+  // ====== UI wiring ======
+  elTheta.addEventListener('input', () => { animId++; draw(); }); // cancel animation when user drags
+  elStep.addEventListener('input', () => { cachedBestTheta=null; draw(); });
+  elN.addEventListener('input', () => regen());
+  elCorr.addEventListener('input', () => regen());
+
+  btnRegen.addEventListener('click', regen);
+  btnBest.addEventListener('click', () => {
+    const b = computeBestTheta();
+    setHint("已计算最优角", `当前参数下最优 θ≈${b.toFixed(1)}°。你可以点“下一步”或直接拖动角度对比。`);
+    draw();
+  });
+  btnToggleGrid.addEventListener('click', () => { showGrid=!showGrid; draw(); });
+  btnToggleAxes.addEventListener('click', () => { showAxes=!showAxes; draw(); });
+
+  btnStart.addEventListener('click', () => { setPlaying(false); startTour(); });
+  btnNext.addEventListener('click', () => { setPlaying(false); nextStep(); });
+  btnPlay.addEventListener('click', () => { if (tourStep===0) startTour(); setPlaying(true); });
+  btnPause.addEventListener('click', () => setPlaying(false));
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+    if (e.code === 'ArrowRight') { e.preventDefault(); setPlaying(false); nextStep(); }
+  });
+
+  // init
+  resize();
+  regen();
+  draw();
+})();
+</script>
+</body>
+</html>

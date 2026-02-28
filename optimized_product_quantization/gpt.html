@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PQ vs OPQ：旋转为何有效（2D动画直觉）</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #121826;
+      --text: #e6edf3;
+      --muted: #9aa4b2;
+      --line: rgba(255,255,255,0.10);
+      --accent: #7aa2ff;
+      --accent2: #7ee787;
+      --warn: #ffa657;
+    }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    .wrap { max-width: 1100px; margin: 18px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 360px; gap: 14px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: 0 8px 30px rgba(0,0,0,0.35); }
+    .topbar { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: baseline; gap: 10px;}
+    .title { font-size: 14px; font-weight: 650; }
+    .subtitle { font-size: 12px; color: var(--muted); }
+    canvas { width: 100%; height: 680px; display: block; background: radial-gradient(1200px 800px at 30% 20%, rgba(122,162,255,0.07), transparent 60%),
+                                         radial-gradient(900px 600px at 80% 70%, rgba(126,231,135,0.06), transparent 55%); }
+    .side { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+    .row { display: grid; grid-template-columns: 120px 1fr; gap: 10px; align-items: center; }
+    label { font-size: 12px; color: var(--muted); }
+    input[type="range"] { width: 100%; }
+    .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--line);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    button:hover { border-color: rgba(255,255,255,0.22); }
+    .metric { padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,0.03); }
+    .metric .k { font-size: 12px; color: var(--muted); }
+    .metric .v { font-size: 18px; font-weight: 700; margin-top: 2px; }
+    .tiny { font-size: 11px; color: var(--muted); line-height: 1.45; }
+    .legend { display: grid; grid-template-columns: 1fr; gap: 6px; }
+    .chip { display:flex; align-items:center; gap:8px; font-size:12px; color: var(--muted); }
+    .dot { width:10px; height:10px; border-radius: 999px; background: #fff; opacity: 0.9; }
+    .dot.gray { background: rgba(230,237,243,0.70); }
+    .dot.blue { background: var(--accent); }
+    .dot.green { background: var(--accent2); }
+    .dot.orange { background: var(--warn); }
+    .hr { height:1px; background: var(--line); margin: 6px 0; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    @media (max-width: 980px) {
+      .wrap { grid-template-columns: 1fr; }
+      canvas { height: 520px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="topbar">
+        <div>
+          <div class="title">PQ vs OPQ（二维直觉动画）：为什么“先旋转再切块”能降低误差</div>
+          <div class="subtitle">把 128D 的 8 块想成 2D 的 x/y 两块：PQ 只能用“轴对齐网格”覆盖数据；OPQ 通过旋转坐标系让网格更贴合分布。</div>
+        </div>
+        <div class="subtitle mono" id="status">ready</div>
+      </div>
+      <canvas id="c"></canvas>
+    </div>
+
+    <div class="card">
+      <div class="topbar">
+        <div class="title">控制面板</div>
+        <div class="subtitle">拖动旋转角度，看误差变化</div>
+      </div>
+      <div class="side">
+        <div class="row">
+          <label>旋转角度 θ</label>
+          <input id="theta" type="range" min="-90" max="90" step="0.1" value="0" />
+        </div>
+        <div class="row">
+          <label>网格步长（量化粗细）</label>
+          <input id="step" type="range" min="6" max="60" step="1" value="22" />
+        </div>
+        <div class="row">
+          <label>点数 N</label>
+          <input id="n" type="range" min="150" max="2000" step="50" value="800" />
+        </div>
+        <div class="row">
+          <label>椭圆倾斜（相关强度）</label>
+          <input id="corr" type="range" min="0" max="0.95" step="0.01" value="0.80" />
+        </div>
+
+        <div class="btns">
+          <button id="regen">重新采样数据</button>
+          <button id="auto">自动找最优角度</button>
+          <button id="toggleGrid">显示/隐藏网格</button>
+          <button id="toggleErr">显示/隐藏误差线</button>
+        </div>
+
+        <div class="metric">
+          <div class="k">总量化误差（平方和）</div>
+          <div class="v mono" id="err">-</div>
+          <div class="tiny">这里就是你文中“8 个子空间距离之和”的二维版本：<span class="mono">err = Σ (dx² + dy²)</span>。PQ 的结构要求它能按块相加；旋转会改变“按块相加”是否合适。</div>
+        </div>
+
+        <div class="legend">
+          <div class="chip"><span class="dot gray"></span>原始数据点（倾斜椭圆）</div>
+          <div class="chip"><span class="dot blue"></span>量化后点（轴对齐网格上的最近点）</div>
+          <div class="chip"><span class="dot orange"></span>误差线（原点→量化点）</div>
+          <div class="chip"><span class="dot green"></span>当前坐标轴（旋转后的轴）</div>
+        </div>
+
+        <div class="hr"></div>
+        <div class="tiny">
+          你问的核心：<br/>
+          <b>“互相垂直的坐标轴是 8 维还是 256 维？”</b><br/>
+          在这里对应的是：<b>x/y 两条轴</b>（128D 就是 128 条轴）。<br/>
+          <b>“2 块 / 8 块”</b>是把轴分组；<b>“256”</b>是每组里中心点数量（码字数）。<br/>
+          这个 demo 用二维把它视觉化：<b>PQ 只能用轴对齐网格</b>，所以 OPQ 就通过旋转去找更适合的轴。
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  const elTheta = document.getElementById('theta');
+  const elStep = document.getElementById('step');
+  const elN = document.getElementById('n');
+  const elCorr = document.getElementById('corr');
+  const elErr = document.getElementById('err');
+  const elStatus = document.getElementById('status');
+
+  const btnRegen = document.getElementById('regen');
+  const btnAuto = document.getElementById('auto');
+  const btnToggleGrid = document.getElementById('toggleGrid');
+  const btnToggleErr = document.getElementById('toggleErr');
+
+  let showGrid = true;
+  let showErr = true;
+
+  // Resize canvas to device pixels
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.floor(rect.width * dpr);
+    canvas.height = Math.floor(rect.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', () => { resize(); draw(); });
+
+  // Random helpers
+  function randn() {
+    // Box-Muller
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+  }
+
+  // Generate correlated 2D gaussian-like cloud (ellipse tilted)
+  // corr in [0, 0.95]
+  function samplePoints(N, corr) {
+    const pts = [];
+    // Cov = [[sx^2, corr*sx*sy], [corr*sx*sy, sy^2]]
+    const sx = 1.8, sy = 0.65; // anisotropy
+    // Cholesky for covariance matrix
+    // L = [[a, 0], [b, c]] such that L L^T = Cov
+    // a = sx
+    // b = corr*sy
+    // c = sy*sqrt(1-corr^2)
+    const a = sx;
+    const b = corr * sy;
+    const c = sy * Math.sqrt(1 - corr*corr);
+
+    for (let i = 0; i < N; i++) {
+      const z1 = randn();
+      const z2 = randn();
+      const x = a * z1;
+      const y = b * z1 + c * z2;
+      // add a tiny non-gaussian twist (so你能看到“去相关≠独立”的直觉)
+      const twist = 0.12 * Math.sin(1.6 * x);
+      pts.push({ x: x, y: y + twist });
+    }
+    return pts;
+  }
+
+  // Rotation
+  function rot(p, thetaRad) {
+    const ct = Math.cos(thetaRad), st = Math.sin(thetaRad);
+    return { x: ct*p.x - st*p.y, y: st*p.x + ct*p.y };
+  }
+  function rotInv(p, thetaRad) {
+    // inverse rotation is rotation by -theta
+    const ct = Math.cos(thetaRad), st = Math.sin(thetaRad);
+    return { x: ct*p.x + st*p.y, y: -st*p.x + ct*p.y };
+  }
+
+  // Uniform scalar quantizer per axis (acts like "kmeans centers along axis" simplification)
+  // This is the 2D analog of PQ per-subspace codebooks, but made visual & simple.
+  function quantizeAxis(u, step) {
+    return Math.round(u / step) * step;
+  }
+
+  // Map world coords to screen
+  function makeView(pts) {
+    // Compute bounds
+    let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
+    for (const p of pts) {
+      if (p.x < minx) minx = p.x;
+      if (p.x > maxx) maxx = p.x;
+      if (p.y < miny) miny = p.y;
+      if (p.y > maxy) maxy = p.y;
+    }
+    // Add margins
+    const pad = 1.2;
+    const cx = (minx + maxx) / 2;
+    const cy = (miny + maxy) / 2;
+    const w = (maxx - minx) * pad;
+    const h = (maxy - miny) * pad;
+
+    const rect = canvas.getBoundingClientRect();
+    const W = rect.width, H = rect.height;
+
+    const scale = 0.46 * Math.min(W / w, H / h); // leave room
+    const ox = W / 2 - cx * scale;
+    const oy = H / 2 + cy * scale;
+
+    return {
+      toScreen(p) { return { x: ox + p.x * scale, y: oy - p.y * scale }; },
+      scale,
+      origin: { x: ox, y: oy }
+    };
+  }
+
+  // Drawing utils
+  function line(a, b, rgba, w=1) {
+    ctx.strokeStyle = rgba;
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  function dot(p, r, rgba) {
+    ctx.fillStyle = rgba;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI*2);
+    ctx.fill();
+  }
+  function text(str, x, y, rgba, size=12, align='left') {
+    ctx.fillStyle = rgba;
+    ctx.font = `${size}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace`;
+    ctx.textAlign = align;
+    ctx.fillText(str, x, y);
+  }
+
+  function formatNum(x) {
+    if (!isFinite(x)) return '-';
+    if (x >= 100000) return x.toExponential(3);
+    return x.toFixed(2);
+  }
+
+  // State
+  let points = [];
+  function regen() {
+    const N = Number(elN.value);
+    const corr = Number(elCorr.value);
+    points = samplePoints(N, corr);
+    draw();
+  }
+
+  // Compute quantization + error for given theta, step
+  function compute(thetaRad, stepWorld) {
+    // OPQ-like: rotate points to new basis (R), do axis-wise quantization in that basis, rotate back
+    const qpts = [];
+    let err = 0;
+    for (const p of points) {
+      const pr = rot(p, thetaRad);           // Rx
+      const qr = { x: quantizeAxis(pr.x, stepWorld), y: quantizeAxis(pr.y, stepWorld) }; // PQ per block
+      const pq = rotInv(qr, thetaRad);       // R^T quantized
+      const dx = p.x - pq.x;
+      const dy = p.y - pq.y;
+      err += dx*dx + dy*dy;
+      qpts.push({ p, pq, pr, qr });
+    }
+    return { qpts, err };
+  }
+
+  // Choose a world-step so that slider feels nice
+  function stepToWorld(stepSlider) {
+    // slider in [6, 60] -> world step in [0.12, 1.2] roughly
+    return stepSlider / 50;
+  }
+
+  function drawAxes(view, thetaRad) {
+    // Show rotated axes in green
+    const rect = canvas.getBoundingClientRect();
+    const W = rect.width, H = rect.height;
+    const center = { x: W/2, y: H/2 };
+
+    // basis vectors in world
+    const ex = rot({x:1, y:0}, thetaRad);
+    const ey = rot({x:0, y:1}, thetaRad);
+
+    const L = 3.0 * view.scale; // length in screen px
+    const xEnd = { x: center.x + ex.x*L, y: center.y - ex.y*L };
+    const yEnd = { x: center.x + ey.x*L, y: center.y - ey.y*L };
+
+    line(center, xEnd, 'rgba(126,231,135,0.85)', 2);
+    line(center, yEnd, 'rgba(126,231,135,0.85)', 2);
+
+    text('x\'', xEnd.x + 6, xEnd.y + 4, 'rgba(126,231,135,0.9)', 12);
+    text('y\'', yEnd.x + 6, yEnd.y + 4, 'rgba(126,231,135,0.9)', 12);
+  }
+
+  function drawGrid(view, thetaRad, stepWorld) {
+    if (!showGrid) return;
+
+    // Draw quantization grid in rotated space but displayed back in original space:
+    // i.e., grid lines in (x', y') become rotated lines in (x, y).
+    const rect = canvas.getBoundingClientRect();
+    const W = rect.width, H = rect.height;
+
+    // Determine grid extent in rotated space by sampling corners of view in world
+    // We'll approximate by using a bounding box in world and mapping to rotated.
+    const cornersScreen = [
+      {x: 0, y: 0}, {x: W, y: 0}, {x: W, y: H}, {x: 0, y: H}
+    ];
+    // inverse map screen->world approx (affine)
+    const inv = (s) => {
+      // view.toScreen: x = ox + wx*scale; y = oy - wy*scale
+      // so wx = (x-ox)/scale; wy = (oy-y)/scale
+      return {
+        x: (s.x - view.origin.x) / view.scale,
+        y: (view.origin.y - s.y) / view.scale
+      };
+    };
+
+    let minxr=Infinity, maxxr=-Infinity, minyr=Infinity, maxyr=-Infinity;
+    for (const cs of cornersScreen) {
+      const w = inv(cs);
+      const r = rot(w, thetaRad);
+      minxr = Math.min(minxr, r.x);
+      maxxr = Math.max(maxxr, r.x);
+      minyr = Math.min(minyr, r.y);
+      maxyr = Math.max(maxyr, r.y);
+    }
+
+    const pad = 1.0;
+    minxr -= pad; maxxr += pad; minyr -= pad; maxyr += pad;
+
+    // Choose grid lines in rotated space at multiples of stepWorld
+    const gx0 = Math.floor(minxr / stepWorld) * stepWorld;
+    const gx1 = Math.ceil(maxxr / stepWorld) * stepWorld;
+    const gy0 = Math.floor(minyr / stepWorld) * stepWorld;
+    const gy1 = Math.ceil(maxyr / stepWorld) * stepWorld;
+
+    ctx.lineWidth = 1;
+
+    // vertical lines: x' = const
+    for (let x = gx0; x <= gx1; x += stepWorld) {
+      const aR = { x, y: gy0 };
+      const bR = { x, y: gy1 };
+      const aW = rotInv(aR, thetaRad);
+      const bW = rotInv(bR, thetaRad);
+      const aS = view.toScreen(aW);
+      const bS = view.toScreen(bW);
+
+      // emphasize axes lines near 0
+      const alpha = (Math.abs(x) < 1e-6) ? 0.22 : 0.08;
+      ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+      ctx.beginPath(); ctx.moveTo(aS.x, aS.y); ctx.lineTo(bS.x, bS.y); ctx.stroke();
+    }
+
+    // horizontal lines: y' = const
+    for (let y = gy0; y <= gy1; y += stepWorld) {
+      const aR = { x: gx0, y };
+      const bR = { x: gx1, y };
+      const aW = rotInv(aR, thetaRad);
+      const bW = rotInv(bR, thetaRad);
+      const aS = view.toScreen(aW);
+      const bS = view.toScreen(bW);
+
+      const alpha = (Math.abs(y) < 1e-6) ? 0.22 : 0.08;
+      ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+      ctx.beginPath(); ctx.moveTo(aS.x, aS.y); ctx.lineTo(bS.x, bS.y); ctx.stroke();
+    }
+  }
+
+  function draw() {
+    resize();
+
+    const thetaDeg = Number(elTheta.value);
+    const thetaRad = thetaDeg * Math.PI / 180;
+    const stepWorld = stepToWorld(Number(elStep.value));
+
+    const { qpts, err } = compute(thetaRad, stepWorld);
+
+    // Build view on original points (and quantized points) for stable framing
+    const all = [];
+    for (const t of qpts) { all.push(t.p); all.push(t.pq); }
+    const view = makeView(all);
+
+    // Clear
+    const rect = canvas.getBoundingClientRect();
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    // Grid
+    drawGrid(view, thetaRad, stepWorld);
+
+    // Error lines
+    if (showErr) {
+      for (const t of qpts) {
+        const a = view.toScreen(t.p);
+        const b = view.toScreen(t.pq);
+        line(a, b, 'rgba(255,166,87,0.28)', 1);
+      }
+    }
+
+    // Original points
+    for (const t of qpts) {
+      const s = view.toScreen(t.p);
+      dot(s, 2.1, 'rgba(230,237,243,0.55)');
+    }
+
+    // Quantized points
+    for (const t of qpts) {
+      const s = view.toScreen(t.pq);
+      dot(s, 2.2, 'rgba(122,162,255,0.75)');
+    }
+
+    // Rotated axes
+    drawAxes(view, thetaRad);
+
+    // HUD
+    text(`θ = ${thetaDeg.toFixed(1)}°`, 14, 22, 'rgba(230,237,243,0.85)', 12);
+    text(`step = ${stepWorld.toFixed(3)} (world units)`, 14, 40, 'rgba(154,164,178,0.85)', 12);
+    text(`N = ${points.length}`, 14, 58, 'rgba(154,164,178,0.85)', 12);
+    text(`corr ≈ ${Number(elCorr.value).toFixed(2)}`, 14, 76, 'rgba(154,164,178,0.85)', 12);
+
+    elErr.textContent = formatNum(err);
+
+    // Status hint
+    elStatus.textContent = (Math.abs(thetaDeg) < 0.05)
+      ? "PQ（未旋转）"
+      : "OPQ-like（先旋转再量化）";
+  }
+
+  // Auto search best angle
+  let autoRunning = false;
+  async function autoFind() {
+    if (autoRunning) return;
+    autoRunning = true;
+    btnAuto.textContent = "自动寻优中…";
+    try {
+      const stepWorld = stepToWorld(Number(elStep.value));
+      let best = { theta: 0, err: Infinity };
+
+      // coarse scan
+      for (let deg = -90; deg <= 90; deg += 1.0) {
+        const rad = deg * Math.PI / 180;
+        const { err } = compute(rad, stepWorld);
+        if (err < best.err) best = { theta: deg, err };
+        if (deg % 10 === 0) {
+          elStatus.textContent = `scan ${deg}°`;
+          await new Promise(r => setTimeout(r, 0));
+        }
+      }
+      // refine around best
+      const center = best.theta;
+      for (let deg = center - 2; deg <= center + 2; deg += 0.1) {
+        const rad = deg * Math.PI / 180;
+        const { err } = compute(rad, stepWorld);
+        if (err < best.err) best = { theta: deg, err };
+      }
+
+      elTheta.value = String(best.theta.toFixed(1));
+      elStatus.textContent = `best θ≈${best.theta.toFixed(1)}°`;
+      draw();
+    } finally {
+      autoRunning = false;
+      btnAuto.textContent = "自动找最优角度";
+    }
+  }
+
+  // Events
+  elTheta.addEventListener('input', draw);
+  elStep.addEventListener('input', draw);
+  elN.addEventListener('input', regen);
+  elCorr.addEventListener('input', regen);
+
+  btnRegen.addEventListener('click', regen);
+  btnAuto.addEventListener('click', autoFind);
+  btnToggleGrid.addEventListener('click', () => { showGrid = !showGrid; draw(); });
+  btnToggleErr.addEventListener('click', () => { showErr = !showErr; draw(); });
+
+  // init
+  resize();
+  regen();
+})();
+</script>
+</body>
+</html>
